@@ -19,4 +19,6 @@ int secp256k1_ec_pubkey_add_gej(unsigned char *, int *, void *);
 int secp256k1_ec_pubkey_batch_init(unsigned int);
 int secp256k1_ec_pubkey_batch_create(unsigned int, unsigned char (*)[65], unsigned char (*)[32]);
 int secp256k1_ec_pubkey_batch_incr(unsigned int, unsigned int, unsigned char (*)[65], unsigned char (*)[32], unsigned char[32]);
+void secp256k1_ec_pubkey_batch_free(void);
+void secp256k1_ec_pubkey_precomp_table_free(void);
 #endif//__EC_PUBKEY_FAST_H_

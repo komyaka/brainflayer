@@ -2,6 +2,8 @@
 #ifndef __BRAINFLAYER_HEX_H_
 #define __BRAINFLAYER_HEX_H_
 
+#include <stddef.h>
+
 static const unsigned char unhex_tab[80] = {
   0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99,
   0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
@@ -22,6 +24,25 @@ unhex(unsigned char *str, size_t str_sz,
                  (unhex_tab[str[i+1]&0x4f] & 0x0f);
   }
   return unhexed;
+}
+
+static inline size_t normalize_line(char *line, size_t len) {
+  if (len == 0) {
+    line[0] = '\0';
+    return 0;
+  }
+
+  if (line[len - 1] == '\n') {
+    --len;
+    if (len > 0 && line[len - 1] == '\r') {
+      --len;
+    }
+  } else if (line[len - 1] == '\r') {
+    --len;
+  }
+
+  line[len] = '\0';
+  return len;
 }
 
 unsigned char * hex(unsigned char *, size_t, unsigned char *, size_t);

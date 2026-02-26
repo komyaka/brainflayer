@@ -11,6 +11,11 @@ CFLAGS = -O3 \
          -pedantic -std=gnu99
 COMPILE = gcc $(CFLAGS)
 
+TESTS = tests/normalize_test
+BENCH_DICT = bench/bench_dict.txt
+BENCH_B ?= 1024
+VALGRIND ?= valgrind
+
 all: $(BINARIES)
 
 .git:
@@ -68,4 +73,35 @@ brainflayer: brainflayer.o $(OBJ_UTIL) $(OBJ_ALGO) \
 	$(COMPILE) $^ $(LIBS) -o $@
 
 clean:
-	rm -f $(BINARIES) $(OBJECTS)
+	rm -f $(BINARIES) $(OBJECTS) $(TESTS) tests/normalize_test.o
+	rm -f bench/bench_dict.txt
+
+.PHONY: test
+test: $(TESTS)
+	./tests/normalize_test
+
+.PHONY: memcheck
+memcheck: brainflayer
+	@echo "Running memcheck (valgrind required) ..."
+	@if command -v $(VALGRIND) >/dev/null 2>&1; then \
+		tmp_dict=$$(mktemp); \
+		printf 'alpha\nbravo\r\ncharlie\rdelta' > $$tmp_dict; \
+		$(VALGRIND) --quiet --leak-check=full --error-exitcode=1 ./brainflayer -t sha256 -B 8 -i $$tmp_dict >/dev/null; \
+		rm -f $$tmp_dict; \
+	else \
+		echo "valgrind not found; skipping memcheck (set VALGRIND to override)"; \
+	fi
+
+.PHONY: bench
+bench: brainflayer $(BENCH_DICT)
+	@echo "Benchmarking brainflayer (B=$(BENCH_B))"
+	@/usr/bin/time -f "brainflayer elapsed %e s" ./brainflayer -t sha256 -B $(BENCH_B) -i $(BENCH_DICT) >/dev/null
+
+$(BENCH_DICT):
+	@python3 bench/generate_bench_dict.py
+
+tests/normalize_test: tests/normalize_test.o hex.o
+	$(COMPILE) $^ $(LIBS) -o $@
+
+tests/normalize_test.o: tests/normalize_test.c hex.h
+	$(COMPILE) -c $< -o $@

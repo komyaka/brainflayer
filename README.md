@@ -103,3 +103,58 @@ See the [Command Matrix](./.github/copilot-instructions.md) for fallback build/t
 | `STATUS.md` | Task state — единственный источник истины |
 | `prompt.md` | Universal task prompt template |
 | `chatgpt_agent/` | Reference профили агентов for ChatGPT / non-Copilot environments |
+
+---
+
+## Building the brainflayer tools
+
+```bash
+git submodule update --init
+make            # builds brainflayer, hexln, hex2blf, blfchk, ecmtabgen, filehex
+```
+
+## Usage Examples (newline-safe)
+
+- **Normalize input with `hexln` (CRLF trimmed):**
+  ```bash
+  printf 'abc\r\n' | ./hexln
+  # 616263
+  ```
+- **Generate a bloom filter from hashes with `hex2blf` (newline-controlled input):**
+  ```bash
+  printf '000102030405060708090a0b0c0d0e0f10111213\n' \
+    | tr -d '\r' \
+    | ./hex2blf -o bloom.blf
+  # use printf (not echo) so you control whether a newline is added
+  ```
+- **Check membership with `blfchk` using newline-safe input:**
+  ```bash
+  printf '000102030405060708090a0b0c0d0e0f10111213' \
+    | ./blfchk -b bloom.blf
+  ```
+- **Run `brainflayer` with bloom/table placeholders (B controls batch size):**
+  ```bash
+  ./brainflayer -b path/to/filter.blf -f path/to/table.h160 \
+    -i path/to/dictionary.txt -B 1024
+  # dictionary lines are normalized (LF/CRLF/CR) before processing
+  ```
+
+## Test, memcheck, and bench commands
+
+```bash
+make test      # OK
+make memcheck  # requires valgrind; prints "valgrind not found; skipping memcheck" if absent
+make bench     # runs benchmark harness
+```
+
+Expected outputs (current run):
+- `make test` → `OK`
+- `make memcheck` → `valgrind not found; skipping memcheck`
+- `make bench` → `brainflayer elapsed 0.60 s`
+
+## Benchmark (Ubuntu 24 / Intel i5)
+
+- Command: `make bench` (default `B=1024`)
+- Dataset: `bench/bench_dict.txt` (2048 entries)
+- Result: `brainflayer elapsed 0.60 s`
+- Environment: Ubuntu 24, Intel i5

@@ -16,16 +16,22 @@ int main(int argc, char **argv) {
   }
 
   while ((line_read = getline(&line, &line_sz, stdin)) > 0) {
-    while (line_sz * 2 > buf_sz) {
+    size_t trimmed = normalize_line(line, (size_t)line_read);
+    size_t needed = trimmed ? trimmed * 2 + 1 : 2;
+    while (needed > buf_sz) {
       buf_sz *= 2;
       buf = realloc(buf, buf_sz);
     }
     if (buf == NULL) {
       fprintf(stderr, "memory error\n");
+      free(line);
       return 1;
     }
-    printf("%s\n", hex(line, line_read - 1, buf, buf_sz));
+    printf("%s\n", hex((unsigned char *)line, trimmed, buf, buf_sz));
   }
+
+  free(buf);
+  free(line);
 
   return 0;
 }

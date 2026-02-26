@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <fcntl.h>
 #include <errno.h>
+#include <stdbool.h>
 
 #include <openssl/sha.h>
 
@@ -34,6 +35,7 @@
 
 // raise this if you really want, but quickly diminishing returns
 #define BATCH_MAX 4096
+#define BATCH_DEFAULT 1024
 
 static int brainflayer_is_init = 0;
 
@@ -360,15 +362,15 @@ void usage(unsigned char *name) {
  -k K                        skip the first K lines of input\n\
  -N N                        stop after N input lines or keys\n\
  -n K/N                      use only the Kth of every N input lines\n\
- -B BATCH_SIZE               batch size for affine transformations\n\
-                             must be a power of 2 (default/max: %d)\n\
+  -B BATCH_SIZE               batch size for affine transformations\n\
+                              must be a power of 2 (default: %d, max: %d)\n\
  -w WINDOW_SIZE              window size for ecmult table (default: 16)\n\
                              uses about 3 * 2^w KiB memory on startup, but\n\
                              only about 2^w KiB once the table is built\n\
  -m FILE                     load ecmult table from FILE\n\
                              the ecmtabgen tool can build such a table\n\
  -v                          verbose - display cracking progress\n\
- -h                          show this help\n", name, BATCH_MAX);
+  -h                          show this help\n", name, BATCH_DEFAULT, BATCH_MAX);
 //q, --quiet                 suppress non-error messages
   exit(1);
 }
@@ -389,6 +391,7 @@ int main(int argc, char **argv) {
   uint64_t olines;
 
   int skipping = 0, tty = 0;
+  bool free_kdfsalt = false;
 
   unsigned char modestr[64];
 
@@ -408,9 +411,12 @@ int main(int argc, char **argv) {
   int batch_stopped = -1;
   char *batch_line[BATCH_MAX];
   size_t batch_line_sz[BATCH_MAX];
-  int batch_line_read[BATCH_MAX];
+  size_t batch_line_read[BATCH_MAX];
   unsigned char batch_priv[BATCH_MAX][32];
   unsigned char batch_upub[BATCH_MAX][65];
+  memset(batch_line, 0, sizeof(batch_line));
+  memset(batch_line_sz, 0, sizeof(batch_line_sz));
+  memset(batch_line_read, 0, sizeof(batch_line_read));
 
   while ((c = getopt(argc, argv, "avxb:hi:k:f:m:n:o:p:s:r:c:t:w:I:N:B:")) != -1) {
     switch (c) {
@@ -633,6 +639,7 @@ int main(int argc, char **argv) {
       } else {
         kdfsalt = chkmalloc(0);
         kdfsalt_sz = 0;
+        free_kdfsalt = true;
       }
     }
   } else {
@@ -720,7 +727,7 @@ int main(int argc, char **argv) {
   }
 
   // set default batch size
-  if (!Bopt) { Bopt = BATCH_MAX; }
+  if (!Bopt) { Bopt = BATCH_DEFAULT; }
 
   for (;;) {
     if (Iopt) {
@@ -734,24 +741,28 @@ int main(int argc, char **argv) {
 
       batch_stopped = Bopt;
     } else {
-      for (i = 0; i < Bopt; ++i) {
-        if ((batch_line_read[i] = getline(&batch_line[i], &batch_line_sz[i], ifile)-1) > -1) {
-          if (skipping) {
-            ++raw_lines;
-            if (kopt && raw_lines < kopt) { --i; continue; }
-            if (nopt_mod && raw_lines % nopt_mod != nopt_rem) { --i; continue; }
-          }
-        } else {
-          break;
+      for (i = 0; i < Bopt;) {
+        ssize_t line_read = getline(&batch_line[i], &batch_line_sz[i], ifile);
+        if (line_read <= -1) { break; }
+
+        batch_line_read[i] = normalize_line(batch_line[i], (size_t)line_read);
+        if (skipping) {
+          ++raw_lines;
+          if (kopt && raw_lines < kopt) { continue; }
+          if (nopt_mod && raw_lines % nopt_mod != nopt_rem) { continue; }
         }
-        batch_line[i][batch_line_read[i]] = 0;
+
         if (xopt) {
+          if (batch_line_read[i] & 1) {
+            fprintf(stderr, "input length %zu is not even for hex decoding, skipping\n", batch_line_read[i]);
+            continue;
+          }
           if (batch_line_read[i] / 2 > unhexed_sz) {
             unhexed_sz = batch_line_read[i];
             unhexed = chkrealloc(unhexed, unhexed_sz);
           }
           // rewrite the input line from hex
-          unhex(batch_line[i], batch_line_read[i], unhexed, unhexed_sz);
+          unhex((unsigned char *)batch_line[i], batch_line_read[i], unhexed, unhexed_sz);
           if (input2priv(batch_priv[i], unhexed, batch_line_read[i]/2) != 0) {
             fprintf(stderr, "input2priv failed! continuing...\n");
           }
@@ -760,13 +771,16 @@ int main(int argc, char **argv) {
             fprintf(stderr, "input2priv failed! continuing...\n");
           }
         }
+        ++i;
       }
-
-      // batch compute the public keys
-      secp256k1_ec_pubkey_batch_create(Bopt, batch_upub, batch_priv);
 
       // save ending value from read loop
       batch_stopped = i;
+
+      // batch compute the public keys
+      if (batch_stopped > 0) {
+        secp256k1_ec_pubkey_batch_create(batch_stopped, batch_upub, batch_priv);
+      }
     }
 
     // loop over the public keys
@@ -878,6 +892,28 @@ int main(int argc, char **argv) {
     }
   }
 
+  if (bloom_mmapf.mem) {
+    munmapf(&bloom_mmapf);
+    bloom = NULL;
+  }
+  if (ffile) { fclose(ffile); }
+  if (ifile && ifile != stdin) { fclose(ifile); }
+  if (ofile && ofile != stdout) { fclose(ofile); }
+  if (!Iopt) {
+    for (i = 0; i < BATCH_MAX; ++i) {
+      free(batch_line[i]);
+    }
+  }
+  if (free_kdfsalt && kdfsalt) {
+    free(kdfsalt);
+    kdfsalt = NULL;
+  }
+  free(mem);
+  mem = NULL;
+  free(unhexed);
+  unhexed = NULL;
+  secp256k1_ec_pubkey_batch_free();
+  secp256k1_ec_pubkey_precomp_table_free();
   return 0;
 }
 

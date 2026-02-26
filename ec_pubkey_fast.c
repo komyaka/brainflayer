@@ -503,6 +503,25 @@ int secp256k1_ec_pubkey_incr(unsigned char *pub_chr, int *pub_chr_sz, unsigned c
   return 0;
 }
 
+void secp256k1_ec_pubkey_batch_free(void) {
+  free(batchpj);
+  free(batchpa);
+  free(batchaz);
+  free(batchai);
+  batchpj = NULL;
+  batchpa = NULL;
+  batchaz = NULL;
+  batchai = NULL;
+}
+
+void secp256k1_ec_pubkey_precomp_table_free(void) {
+  if (prec_mmapf.mem) {
+    munmapf(&prec_mmapf);
+    prec = NULL;
+    prec_mmapf.mem = NULL;
+  }
+}
+
 void * secp256k1_ec_priv_to_gej(unsigned char *priv) {
   secp256k1_gej_t *gej = malloc(sizeof(secp256k1_gej_t));
 #ifdef USE_BL_ARITHMETIC
