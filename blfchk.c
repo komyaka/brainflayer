@@ -27,6 +27,7 @@ int main(int argc, char **argv) {
   hash160_t hash;
   char *line = NULL;
   size_t line_sz = 0;
+  ssize_t line_read;
   unsigned char *bloom, *bloomfile, *hashfile;
   FILE *ifile = stdin, *ofile = stdout, *hfile = NULL;
   mmapf_ctx bloom_mmapf;
@@ -53,8 +54,10 @@ int main(int argc, char **argv) {
     hfile = fopen(hashfile, "r");
   }
 
-  while (getline(&line, &line_sz, ifile) > 0) {
-    unhex(line, strlen(line), hash.uc, sizeof(hash.uc));
+  while ((line_read = getline(&line, &line_sz, ifile)) > 0) {
+    size_t len = normalize_line(line, (size_t)line_read);
+    if (len != sizeof(hash.uc) * 2) { continue; }
+    unhex((unsigned char *)line, len, hash.uc, sizeof(hash.uc));
 
     unsigned int bit;
     bit = BH00(hash.uc); if (BLOOM_GET_BIT(bit) == 0) { continue; }
@@ -83,9 +86,12 @@ int main(int argc, char **argv) {
       continue;
     }
     //fprintf(ofile, "%s\n", hex(hash.uc, sizeof(hash.uc), buf, sizeof(buf)));
-    fprintf(ofile, "%s", line);
+    fprintf(ofile, "%s\n", line);
   }
 
+  if (hfile) { fclose(hfile); }
+  munmapf(&bloom_mmapf);
+  free(line);
   return 0;
 }
 

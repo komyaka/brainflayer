@@ -30,6 +30,7 @@ int main(int argc, char **argv) {
   unsigned char *bloom, *hashfile, *bloomfile;
   FILE *f, *b;
   size_t line_sz = 1024, line_ct = 0;
+  ssize_t line_read;
   char *line;
 
   double err_rate;
@@ -85,9 +86,12 @@ int main(int argc, char **argv) {
   i = 0;
   stat(hashfile, &sb);
   fprintf(stderr, "[*] Loading hash160s from '%s' \033[s  0.0%%", hashfile);
-  while (getline(&line, &line_sz, f) > 0) {
+  while ((line_read = getline(&line, &line_sz, f)) > 0) {
+    size_t len = normalize_line(line, (size_t)line_read);
+    if (len == 0) { continue; }
+    if (len != sizeof(hash.uc) * 2) { continue; }
     ++line_ct;
-    unhex(line, strlen(line), hash.uc, sizeof(hash.uc));
+    unhex((unsigned char *)line, len, hash.uc, sizeof(hash.uc));
     bloom_set_hash160(bloom, hash.ul);
 
     if ((++i & 0x3ffff) == 0) {
@@ -108,6 +112,10 @@ int main(int argc, char **argv) {
   }
   
   fprintf(stderr, "[+] Success!\n");
+  fclose(f);
+  fclose(b);
+  free(line);
+  free(bloom);
   return 0;
 }
 
