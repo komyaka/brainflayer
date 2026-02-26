@@ -27,6 +27,7 @@ unhex(unsigned char *str, size_t str_sz,
 }
 
 static inline size_t normalize_line(char *line, size_t len) {
+  if (line == NULL) { return 0; }
   if (len == 0) {
     line[0] = '\0';
     return 0;

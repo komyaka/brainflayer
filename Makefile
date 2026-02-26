@@ -7,7 +7,7 @@ BINARIES = brainflayer hexln hex2blf blfchk ecmtabgen filehex
 LIBS = -lrt -lcrypto -lgmp
 CFLAGS = -O3 \
          -flto -funsigned-char -falign-functions=16 -falign-loops=16 -falign-jumps=16 \
-         -Wall -Wextra -Wno-pointer-sign -Wno-sign-compare \
+         -Wall -Wextra -Wno-pointer-sign -Wno-sign-compare -Wno-deprecated-declarations \
          -pedantic -std=gnu99
 COMPILE = gcc $(CFLAGS)
 
@@ -77,7 +77,7 @@ clean:
 	rm -f bench/bench_dict.txt
 
 .PHONY: test
-test: hexln $(TESTS)
+test: hexln blfchk hex2blf brainflayer $(TESTS)
 	./tests/normalize_test
 
 .PHONY: memcheck
@@ -91,6 +91,14 @@ memcheck: brainflayer
 	else \
 		echo "valgrind not found; skipping memcheck (set VALGRIND to override)"; \
 	fi
+
+.PHONY: sanitize
+sanitize:
+	@echo "Building with AddressSanitizer ..."
+	$(MAKE) clean
+	$(MAKE) CFLAGS="$(CFLAGS) -fsanitize=address -fno-omit-frame-pointer" \
+	        hexln blfchk hex2blf $(TESTS)
+	./tests/normalize_test
 
 .PHONY: bench
 bench: brainflayer $(BENCH_DICT)
