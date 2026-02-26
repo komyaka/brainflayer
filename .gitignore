@@ -38,6 +38,9 @@ bench/bench_dict.txt
 bench/__pycache__
 tests/normalize_test
 
+# CodeQL
+_codeql_detected_source_root
+
 # Debug files
 *.dSYM/
 
