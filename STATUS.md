@@ -297,7 +297,7 @@ _[Filled by Coder]_
 | blfchk.c | modified | Normalized lookup inputs, restored newline output, and munmapped bloom resources |
 | ec_pubkey_fast.c | modified | Added batch and precomp cleanup helpers for secp256k1 resources |
 | ec_pubkey_fast.h | modified | Declared batch/precomp cleanup APIs |
-| Makefile | modified | Added test/memcheck/bench targets and hooked bench data generation script |
+| Makefile | modified | Added test/memcheck/bench targets, hexln test dependency, and hooked bench data generation script |
 | bench/generate_bench_dict.py | created | Script to generate quick bench dictionary input |
 | tests/normalize_test.c | created | Normalization and hexln regression test harness |
 | .gitignore | modified | Ignored generated bench/test artifacts |
@@ -309,7 +309,7 @@ _[Filled by Coder]_
 
 ### Test Results
 ```
-make test
+make test (hexln built via dependency)
 OK
 
 make memcheck
@@ -333,8 +333,8 @@ brainflayer elapsed 0.60 s
 STATUS: VERIFIED
 AGENT: coder
 PHASE: implementation
-TIMESTAMP: 2026-02-26T12:25:37+00:00
-DETAILS: Normalization shared helper applied, batch defaults tuned, resources cleaned up, and tests/bench targets executed (memcheck reports valgrind unavailable).
+TIMESTAMP: 2026-02-26T13:10:00Z
+DETAILS: Normalization helper applied, batch defaults tuned, resources cleaned up, test target now builds hexln before running normalize regression; make test passes, memcheck still gated on valgrind availability.
 ```
 
 ---
@@ -515,3 +515,4 @@ TIMESTAMP:
 | 2026-02-26T13:45:00Z | Performance phase completed (Perf review VERIFIED) |
 | 2026-02-26T12:25:37+00:00 | Coder phase completed (Implementation VERIFIED) |
 | 2026-02-26T12:56:21Z | Orchestrator planned fix for `make test` hexln dependency; proceeding to implementation |
+| 2026-02-26T13:10:30Z | Implementation: Makefile test target builds hexln; `make test` passes |
