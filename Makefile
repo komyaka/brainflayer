@@ -77,7 +77,7 @@ clean:
 	rm -f bench/bench_dict.txt
 
 .PHONY: test
-test: $(TESTS)
+test: hexln $(TESTS)
 	./tests/normalize_test
 
 .PHONY: memcheck
