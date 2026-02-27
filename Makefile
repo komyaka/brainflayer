@@ -34,10 +34,18 @@ VALGRIND ?= valgrind
 
 all: $(BINARIES)
 
+# secp256k1 configure flags
+ifeq ($(OS),Windows_NT)
+  SECP_CONFIGURE_FLAGS = --enable-endomorphism --disable-tests \
+      --with-field=64bit --with-scalar=64bit
+else
+  SECP_CONFIGURE_FLAGS = --enable-endomorphism
+endif
+
 secp256k1/.libs/libsecp256k1.a:
 	cd secp256k1; make distclean || true
 	cd secp256k1; ./autogen.sh
-	cd secp256k1; ./configure --enable-endomorphism
+	cd secp256k1; ./configure $(SECP_CONFIGURE_FLAGS)
 	cd secp256k1; make
 
 secp256k1/include/secp256k1.h: secp256k1/.libs/libsecp256k1.a
