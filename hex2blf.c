@@ -11,8 +11,6 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 
-#include <arpa/inet.h> /*  for ntohl/htonl */
-
 #include <math.h> /* pow/exp */
 
 #include "hex.h"

@@ -10,10 +10,7 @@
 #include <fcntl.h>
 #include <errno.h>
 
-#include <arpa/inet.h> /* for ntohl/htonl */
-
 #include <sys/time.h>
-#include <sys/wait.h>
 #include <sys/types.h>
 
 #include "hex.h"
@@ -28,30 +25,53 @@ int main(int argc, char **argv) {
   char *line = NULL;
   size_t line_sz = 0;
   ssize_t line_read;
-  unsigned char *bloom, *bloomfile, *hashfile;
+  unsigned char *bloom, *bloomfile = NULL, *hashfile = NULL;
+  char *ifilename = NULL;
   FILE *ifile = stdin, *ofile = stdout, *hfile = NULL;
   mmapf_ctx bloom_mmapf;
+  int opt;
 
-  if (argc < 2 || argc > 3) {
-    fprintf(stderr, "Usage: %s BLOOM_FILTER_FILE HASH_FILE\n", argv[0]);
+#define USAGE() fprintf(stderr, \
+  "Usage: %s [-i INPUT_FILE] BLOOM_FILTER_FILE [HASH_FILE]\n", argv[0])
+
+  while ((opt = getopt(argc, argv, "i:")) != -1) {
+    switch (opt) {
+      case 'i': ifilename = optarg; break;
+      default:
+        USAGE();
+        return 1;
+    }
+  }
+
+  if (optind >= argc || argc - optind > 2) {
+    USAGE();
     return 1;
   }
 
-  bloomfile = argv[1];
+  bloomfile = (unsigned char *)argv[optind];
+  if (argc - optind == 2) { hashfile = (unsigned char *)argv[optind + 1]; }
+
+  if (ifilename != NULL) {
+    if ((ifile = fopen(ifilename, "r")) == NULL) {
+      fprintf(stderr, "failed to open input file '%s': %s\n", ifilename, strerror(errno));
+      return 1;
+    }
+  }
 
   if ((ret = mmapf(&bloom_mmapf, bloomfile, BLOOM_SIZE, MMAPF_RNDRD)) != MMAPF_OKAY) {
     fprintf(stderr, "failed to open bloom filter '%s': %s\n", bloomfile, mmapf_strerror(ret));
+    if (ifile != stdin) { fclose(ifile); }
     return 1;
   } else if (bloom_mmapf.mem == NULL) {
     fprintf(stderr, "got NULL pointer trying to set up bloom filter\n");
+    if (ifile != stdin) { fclose(ifile); }
     return 1;
   }
 
   bloom = bloom_mmapf.mem;
 
-  if (argc == 3) {
-    hashfile = argv[2];
-    hfile = fopen(hashfile, "r");
+  if (hashfile != NULL) {
+    hfile = fopen((char *)hashfile, "r");
   }
 
   while ((line_read = getline(&line, &line_sz, ifile)) > 0) {
@@ -90,9 +110,8 @@ int main(int argc, char **argv) {
   }
 
   if (hfile) { fclose(hfile); }
+  if (ifile != stdin) { fclose(ifile); }
   munmapf(&bloom_mmapf);
   free(line);
   return 0;
 }
-
-/*  vim: set ts=2 sw=2 et ai si: */
