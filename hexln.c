@@ -2,6 +2,10 @@
 #include <stdlib.h>
 #include <stdio.h>
 
+#ifdef _WIN32
+# include "win_compat.h"
+#endif
+
 #include "hex.h"
 
 int main(int argc, char **argv) {

@@ -18,6 +18,10 @@
 #include <stdlib.h>
 #include <stdint.h>
 
+#ifdef _WIN32
+# include "win_compat.h"
+#endif
+
 #include <openssl/sha.h>
 
 #include "hex.h"

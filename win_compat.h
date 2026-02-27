@@ -98,6 +98,36 @@ static inline int posix_fadvise(int fd, off_t off, off_t len, int adv) {
 /* isatty is in io.h on Windows */
 # include <io.h>
 
+/* getline — POSIX function not available in MinGW */
+# include <errno.h>
+static inline ssize_t getline(char **lineptr, size_t *n, FILE *stream) {
+  size_t used = 0;
+  int c;
+  if (lineptr == NULL || n == NULL || stream == NULL) { errno = EINVAL; return -1; }
+  if (*lineptr == NULL || *n == 0) {
+    *n = 128;
+    *lineptr = (char *)malloc(*n);
+    if (*lineptr == NULL) { errno = ENOMEM; return -1; }
+  }
+  while ((c = fgetc(stream)) != EOF) {
+    if (used + 2 > *n) {
+      size_t new_n = *n * 2;
+      char *new_ptr = (char *)realloc(*lineptr, new_n);
+      if (new_ptr == NULL) { errno = ENOMEM; return -1; }
+      *lineptr = new_ptr;
+      *n = new_n;
+    }
+    (*lineptr)[used++] = (char)c;
+    if (c == '\n') break;
+  }
+  if (used == 0) {
+    if (ferror(stream)) errno = EIO;
+    return -1;
+  }
+  (*lineptr)[used] = '\0';
+  return (ssize_t)used;
+}
+
 /* fsync / msync shims */
 static inline int fsync(int fd) {
   HANDLE h = (HANDLE)_get_osfhandle(fd);
