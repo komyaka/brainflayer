@@ -2,7 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [Unreleased] — 2026-02-26
+
+### Changed
+- README.md fully rewritten in Russian (`ru`): comprehensive project description, secp256k1 pipeline diagram, dependency table, build instructions with submodule init, per-tool documentation (`brainflayer`, `hexln`, `hex2blf`, `blfchk`, `ecmtabgen`), bloom filter preparation guide, detailed usage examples for every supported input type (sha256, sha3, keccak, camp2, warp, bwio, bv2, rush, priv), parallel workload splitting (`-n K/N`), hex-encoded input (`-x`), precomputed EC table (`ecmtabgen` + `-m`), exact verification (`-f`), testing/benchmarking targets, performance tuning notes, complete flag reference, and licence notice
+
+## [Previous Unreleased]
 
 ### Fixed
 - Fixed newline handling (CRLF/LF/CR) across all tools: brainflayer, hexln, hex2blf, blfchk
