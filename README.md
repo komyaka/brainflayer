@@ -122,22 +122,30 @@ make
 #### Вариант 1 — MSYS2 (MinGW-w64)
 
 1. Скачать и установить [MSYS2](https://www.msys2.org/).
-2. Открыть **MSYS2 MinGW 64-bit** (mingw64) shell и выполнить:
+2. Открыть **MSYS2 MinGW 64-bit** (`mingw64`) shell — **не** UCRT64 и не MSYS shell.
+3. Установить необходимые пакеты и собрать:
 
 ```bash
 # Установить необходимые пакеты
 pacman -S mingw-w64-x86_64-gcc mingw-w64-x86_64-make \
           mingw-w64-x86_64-openssl mingw-w64-x86_64-gmp \
-          autoconf automake libtool git
+          autoconf automake libtool git make
 
 # Клонировать и собрать
 git clone https://github.com/komyaka/brainflayer
 cd brainflayer
-mingw32-make
+make
 ```
 
-> Зависимости для Windows: `mingw-w64-x86_64-gcc`, `mingw-w64-x86_64-openssl`, `mingw-w64-x86_64-gmp`.  
+> **Важно:** Используйте именно **MinGW 64-bit** (`mingw64`) shell, а не UCRT64 или обычный MSYS shell.  
+> Используйте `make` (из пакета `make`), а не `mingw32-make`.  
+> Зависимости: `mingw-w64-x86_64-gcc`, `mingw-w64-x86_64-openssl`, `mingw-w64-x86_64-gmp`.  
 > Компоновщик дополнительно требует `-lws2_32` (Winsock2) — это автоматически подхватывается Makefile.
+
+**Устранение неполадок:**
+- Если `./autogen.sh` завершается с ошибкой — убедитесь, что установлены `autoconf`, `automake`, `libtool`.
+- Если configure выводит ошибки вроде `command not found` для `AX_PROG_CC_FOR_BUILD` или `SECP_INT128_CHECK` — убедитесь, что файлы `secp256k1/build-aux/m4/*.m4` присутствуют в репозитории.
+- На x86_64 сборка автоматически использует 64-битные оптимизации поля/скаляра (`--with-field=64bit --with-scalar=64bit`).
 
 #### Вариант 2 — WSL (Ubuntu)
 
