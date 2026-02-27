@@ -6,6 +6,7 @@
 #include <fcntl.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <stdint.h>
 
 #include <sys/types.h>
 #include <sys/stat.h>
@@ -35,7 +36,27 @@ static int secp256k1_eckey_pubkey_parse(secp256k1_ge_t *elem, const unsigned cha
 #undef ASSERT
 
 #define READBIT(A, B) ((A >> (B & 7)) & 1)
-#define SETBIT(T, B, V) (T = V ? T | (1<<B) : T & ~(1<<B))
+#define SETBIT(T, B, V) (T = (T & ~(1<<(B))) | ((V)<<(B)))
+
+/* Extract a window of window_size bits starting at bit_offset from a 32-byte
+ * big-endian key.  Bit 0 is the LSB of key[31], bit 255 is the MSB of
+ * key[0].  No heap allocation; replaces the unsigned char a[256] expansion.
+ *
+ * @param key        32-byte big-endian scalar (private key or half-scalar).
+ * @param bit_offset Starting bit index (0 = LSB of key[31]).
+ * @param window_size Number of consecutive bits to extract (≤ 32).
+ * @return           Extracted bits packed into bits 0..(window_size-1).
+ */
+static inline int extract_window_bits(const unsigned char *key, int bit_offset, int window_size) {
+  int bits = 0;
+  for (int i = 0; i < window_size; i++) {
+    int global_bit = bit_offset + i;
+    int byte_idx   = 31 - (global_bit >> 3);
+    int bit_idx    = global_bit & 7;
+    bits |= ((key[byte_idx] >> bit_idx) & 1) << i;
+  }
+  return bits;
+}
 int n_windows = 0;
 int n_values;
 secp256k1_gej_t nums_gej;
@@ -62,9 +83,12 @@ int secp256k1_ec_pubkey_precomp_table_save(int window_size, unsigned char *filen
 
   records = n_windows*n_values;
   dest = fdopen(fd, "w");
-  if (fwrite(prec, sizeof(secp256k1_ge_t), n_windows*n_values, dest) != records)
+  if (fwrite(prec, sizeof(secp256k1_ge_t), n_windows*n_values, dest) != records) {
+    fclose(dest);
     return -1;
+  }
 
+  fclose(dest);
   return 0;
 }
 
@@ -129,6 +153,11 @@ int secp256k1_ec_pubkey_precomp_table(int window_size, unsigned char *filename) 
 #else
   table = malloc(n_windows*n_values*sizeof(secp256k1_gej_t));
 #endif
+
+  if (table == NULL) {
+    secp256k1_ec_pubkey_precomp_table_free();
+    return -1;
+  }
 
   secp256k1_gej_set_ge(&gj, &secp256k1_ge_const_g);
 
@@ -204,8 +233,6 @@ static void secp256k1_ecmult_gen2(secp256k1_gej_t *r, const unsigned char *secke
   secp256k1_scalar_t k, k1, k2;
   int sign1, sign2;
   unsigned char b1[32], b2[32];
-  unsigned char a1[128], a2[128]; /* lower 128 bits of each half-scalar */
-  int bits;
 
   secp256k1_scalar_set_b32(&k, seckey, NULL);
   secp256k1_scalar_split_lambda(&k1, &k2, &k);
@@ -219,27 +246,18 @@ static void secp256k1_ecmult_gen2(secp256k1_gej_t *r, const unsigned char *secke
   secp256k1_scalar_get_b32(b1, &k1);
   secp256k1_scalar_get_b32(b2, &k2);
 
-  /* Extract lower 128 bits (bytes 16-31 in big-endian = bits 0-127) */
-  for (int j = 0; j < 16; j++) {
-    for (int i = 0; i < 8; i++) {
-      a1[i + j*8] = READBIT(b1[31-j], i);
-      a2[i + j*8] = READBIT(b2[31-j], i);
-    }
-  }
-
   secp256k1_gej_t r1, r2;
   r1.infinity = 1;
   r2.infinity = 1;
 
   for (int j = 0; j < n_half; j++) {
     int w = (j == n_half-1 && remmining_half != 0) ? remmining_half : WINDOW_SIZE;
-    bits = 0;
-    for (int i = 0; i < w; i++) SETBIT(bits, i, a1[i + j*WINDOW_SIZE]);
-    secp256k1_gej_add_ge_var(&r1, &r1, &prec[j*n_values + bits], NULL);
 
-    bits = 0;
-    for (int i = 0; i < w; i++) SETBIT(bits, i, a2[i + j*WINDOW_SIZE]);
-    secp256k1_gej_add_ge_var(&r2, &r2, &prec[(n_half+j)*n_values + bits], NULL);
+    int bits1 = extract_window_bits(b1, j * WINDOW_SIZE, w);
+    secp256k1_gej_add_ge_var(&r1, &r1, &prec[j*n_values + bits1], NULL);
+
+    int bits2 = extract_window_bits(b2, j * WINDOW_SIZE, w);
+    secp256k1_gej_add_ge_var(&r2, &r2, &prec[(n_half+j)*n_values + bits2], NULL);
   }
 
   if (sign1) secp256k1_gej_neg(&r1, &r1);
@@ -248,28 +266,11 @@ static void secp256k1_ecmult_gen2(secp256k1_gej_t *r, const unsigned char *secke
 }
 #else
 static void secp256k1_ecmult_gen2(secp256k1_gej_t *r, const unsigned char *seckey){
-  unsigned char a[256];
-  for (int j = 0; j < 32; j++) {
-    for (int i = 0; i < 8; i++) {
-      a[i+j*8] = READBIT(seckey[31-j], i);
-    }
-  }
-
   r->infinity = 1;
-  int bits;
 
   for (int j = 0; j < n_windows; j++) {
-    if (j == n_windows -1 && remmining != 0) {
-      bits = 0;
-      for (int i = 0; i < remmining; i++) {
-        SETBIT(bits,i,a[i + j * WINDOW_SIZE]);
-      }
-    } else {
-      bits = 0;
-      for (int i = 0; i < WINDOW_SIZE; i++) {
-        SETBIT(bits,i,a[i + j * WINDOW_SIZE]);
-      }
-    }
+    int w    = (j == n_windows - 1 && remmining != 0) ? remmining : WINDOW_SIZE;
+    int bits = extract_window_bits(seckey, j * WINDOW_SIZE, w);
     secp256k1_gej_add_ge_var(r, r, &prec[j*n_values + bits], NULL);
   }
 }
@@ -341,8 +342,6 @@ static void secp256k1_ecmult_gen_bl(secp256k1_gej_t *r, const unsigned char *sec
   secp256k1_scalar_t k, k1, k2;
   int sign1, sign2;
   unsigned char b1[32], b2[32];
-  unsigned char a1[128], a2[128];
-  int bits;
 
   secp256k1_scalar_set_b32(&k, seckey, NULL);
   secp256k1_scalar_split_lambda(&k1, &k2, &k);
@@ -355,26 +354,18 @@ static void secp256k1_ecmult_gen_bl(secp256k1_gej_t *r, const unsigned char *sec
   secp256k1_scalar_get_b32(b1, &k1);
   secp256k1_scalar_get_b32(b2, &k2);
 
-  for (int j = 0; j < 16; j++) {
-    for (int i = 0; i < 8; i++) {
-      a1[i + j*8] = READBIT(b1[31-j], i);
-      a2[i + j*8] = READBIT(b2[31-j], i);
-    }
-  }
-
   secp256k1_gej_t r1, r2;
   r1.infinity = 1;
   r2.infinity = 1;
 
   for (int j = 0; j < n_half; j++) {
     int w = (j == n_half-1 && remmining_half != 0) ? remmining_half : WINDOW_SIZE;
-    bits = 0;
-    for (int i = 0; i < w; i++) SETBIT(bits, i, a1[i + j*WINDOW_SIZE]);
-    secp256k1_gej_add_ge_bl(&r1, &r1, &prec[j*n_values + bits], NULL);
 
-    bits = 0;
-    for (int i = 0; i < w; i++) SETBIT(bits, i, a2[i + j*WINDOW_SIZE]);
-    secp256k1_gej_add_ge_bl(&r2, &r2, &prec[(n_half+j)*n_values + bits], NULL);
+    int bits1 = extract_window_bits(b1, j * WINDOW_SIZE, w);
+    secp256k1_gej_add_ge_bl(&r1, &r1, &prec[j*n_values + bits1], NULL);
+
+    int bits2 = extract_window_bits(b2, j * WINDOW_SIZE, w);
+    secp256k1_gej_add_ge_bl(&r2, &r2, &prec[(n_half+j)*n_values + bits2], NULL);
   }
 
   if (sign1) secp256k1_gej_neg(&r1, &r1);
@@ -383,37 +374,18 @@ static void secp256k1_ecmult_gen_bl(secp256k1_gej_t *r, const unsigned char *sec
 }
 #else
 static void secp256k1_ecmult_gen_bl(secp256k1_gej_t *r, const unsigned char *seckey){
-  unsigned char a[256];
-  for (int j = 0; j < 32; j++){
-    for (int i = 0; i < 8; i++){
-      a[i+j*8] = READBIT(seckey[31-j], i);
-    }
-  }
-
   r->infinity = 1;
-  int bits;
 
   for (int j = 0; j < n_windows; j++) {
-    if (j == n_windows -1 && remmining != 0) {
-      bits = 0;
-      for (int i = 0; i < remmining; i++) {
-        SETBIT(bits,i,a[i + j * WINDOW_SIZE]);
-      }
-      //bits = secp256k1_scalar_get_bits2(a, j * WINDOW_SIZE, remmining);
-    } else {
-      bits = 0;
-      for (int i = 0; i < WINDOW_SIZE; i++) {
-        SETBIT(bits,i,a[i + j * WINDOW_SIZE]);
-      }
-      //bits = secp256k1_scalar_get_bits2(a, j * WINDOW_SIZE, WINDOW_SIZE);
-    }
+    int w    = (j == n_windows - 1 && remmining != 0) ? remmining : WINDOW_SIZE;
+    int bits = extract_window_bits(seckey, j * WINDOW_SIZE, w);
     secp256k1_gej_add_ge_bl(r, r, &prec[j*n_values + bits], NULL);
   }
 }
 #endif
 #endif
 
-int secp256k1_ec_pubkey_create_precomp(unsigned char *pub_chr, int *pub_chr_sz, const unsigned char *seckey) {
+int secp256k1_ec_pubkey_create_precomp(unsigned char * restrict pub_chr, int * restrict pub_chr_sz, const unsigned char * restrict seckey) {
   secp256k1_gej_t pj;
   secp256k1_ge_t p;
 
@@ -439,17 +411,29 @@ static secp256k1_gej_t *batchpj;
 static secp256k1_ge_t  *batchpa;
 static secp256k1_fe_t  *batchaz;
 static secp256k1_fe_t  *batchai;
+static unsigned int     batchcap = 0;
 
 int secp256k1_ec_pubkey_batch_init(unsigned int num) {
-  if (!batchpj) { batchpj = malloc(sizeof(secp256k1_gej_t)*num); }
-  if (!batchpa) { batchpa = malloc(sizeof(secp256k1_ge_t)*num);  }
-  if (!batchaz) { batchaz = malloc(sizeof(secp256k1_fe_t)*num);  }
-  if (!batchai) { batchai = malloc(sizeof(secp256k1_fe_t)*num);  }
-  if (batchpj == NULL || batchpa == NULL || batchaz == NULL || batchai == NULL) {
-    return 1;
-  } else {
-    return 0;
+  if (num > batchcap) {
+    free(batchpj); batchpj = NULL;
+    free(batchpa); batchpa = NULL;
+    free(batchaz); batchaz = NULL;
+    free(batchai); batchai = NULL;
+    batchpj = malloc(sizeof(secp256k1_gej_t)*num);
+    batchpa = malloc(sizeof(secp256k1_ge_t)*num);
+    batchaz = malloc(sizeof(secp256k1_fe_t)*num);
+    batchai = malloc(sizeof(secp256k1_fe_t)*num);
+    if (batchpj == NULL || batchpa == NULL || batchaz == NULL || batchai == NULL) {
+      free(batchpj); batchpj = NULL;
+      free(batchpa); batchpa = NULL;
+      free(batchaz); batchaz = NULL;
+      free(batchai); batchai = NULL;
+      batchcap = 0;
+      return 1;
+    }
+    batchcap = num;
   }
+  return 0;
 }
 
 void secp256k1_ge_set_all_gej_static(int num, secp256k1_ge_t *batchpa, secp256k1_gej_t *batchpj) {
@@ -466,7 +450,7 @@ void secp256k1_ge_set_all_gej_static(int num, secp256k1_ge_t *batchpa, secp256k1
 }
 
 // call secp256k1_ec_pubkey_batch_init first or you get segfaults
-int secp256k1_ec_pubkey_batch_incr(unsigned int num, unsigned int skip, unsigned char (*pub)[65], unsigned char (*sec)[32], unsigned char start[32]) {
+int secp256k1_ec_pubkey_batch_incr(unsigned int num, unsigned int skip, unsigned char (* restrict pub)[65], unsigned char (* restrict sec)[32], unsigned char start[32]) {
   // some of the values could be reused between calls, but dealing with the data
   // structures is a pain, and with a reasonable batch size, the perf difference
   // is tiny
@@ -525,7 +509,7 @@ int secp256k1_ec_pubkey_batch_incr(unsigned int num, unsigned int skip, unsigned
 }
 
 // call secp256k1_ec_pubkey_batch_init first or you get segfaults
-int secp256k1_ec_pubkey_batch_create(unsigned int num, unsigned char (*pub)[65], unsigned char (*sec)[32]) {
+int secp256k1_ec_pubkey_batch_create(unsigned int num, unsigned char (* restrict pub)[65], unsigned char (* restrict sec)[32]) {
   int i;
 
   /* generate jacobian coordinates */
@@ -583,10 +567,11 @@ void priv_add_uint8(unsigned char *priv, unsigned char add) {
 }
 
 void priv_add_uint32(unsigned char *priv, unsigned int add) {
-  int p = 31;
-  while (add) {
-    _priv_add(priv, add & 255, p--);
-    add >>= 8;
+  uint64_t carry = (uint64_t)add;
+  for (int i = 31; i >= 0 && carry; i--) {
+    carry += priv[i];
+    priv[i] = (unsigned char)(carry & 0xFF);
+    carry >>= 8;
   }
 }
 
@@ -647,10 +632,11 @@ void secp256k1_ec_pubkey_batch_free(void) {
   free(batchpa);
   free(batchaz);
   free(batchai);
-  batchpj = NULL;
-  batchpa = NULL;
-  batchaz = NULL;
-  batchai = NULL;
+  batchpj  = NULL;
+  batchpa  = NULL;
+  batchaz  = NULL;
+  batchai  = NULL;
+  batchcap = 0;
 }
 
 void secp256k1_ec_pubkey_precomp_table_free(void) {
@@ -663,6 +649,7 @@ void secp256k1_ec_pubkey_precomp_table_free(void) {
 
 void * secp256k1_ec_priv_to_gej(unsigned char *priv) {
   secp256k1_gej_t *gej = malloc(sizeof(secp256k1_gej_t));
+  if (gej == NULL) return NULL;
 #ifdef USE_BL_ARITHMETIC
   secp256k1_ecmult_gen_bl(gej, priv);
 #else
