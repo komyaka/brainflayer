@@ -10,8 +10,10 @@
 #include <fcntl.h>
 #include <errno.h>
 
-#include <sys/time.h>
 #include <sys/types.h>
+#ifndef _WIN32
+# include <sys/time.h>
+#endif
 
 #include "hex.h"
 #include "bloom.h"

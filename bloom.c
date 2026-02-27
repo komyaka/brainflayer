@@ -1,13 +1,10 @@
 /* Copyright (c) 2015 Ryan Castellucci, All Rights Reserved */
-#include <unistd.h>
 #include <string.h>
-#include <fcntl.h>
 #include <stdlib.h>
 #include <stdio.h>
 
 #include <sys/types.h>
 #include <sys/stat.h>
-#include <sys/mman.h>
 
 #include "bloom.h"
 #include "mmapf.h"
