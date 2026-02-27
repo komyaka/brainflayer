@@ -1,5 +1,5 @@
 HEADERS = bloom.h crack.h hash160.h warpwallet.h
-OBJ_MAIN = brainflayer.o hex2blf.o blfchk.o ecmtabgen.o hexln.o filehex.o
+OBJ_MAIN = brainflayer.o hex2blf.o blfchk.o ecmtabgen.o hexln.o filehex.o addr2hex.o
 OBJ_UTIL = hex.o bloom.o mmapf.o hsearchf.o ec_pubkey_fast.o ripemd160_256.o dldummy.o
 OBJ_ALGO = $(patsubst %.c,%.o,$(wildcard algo/*.c))
 OBJECTS = $(OBJ_MAIN) $(OBJ_UTIL) $(OBJ_ALGO)
@@ -20,7 +20,7 @@ else
   endif
 endif
 
-BINARIES = brainflayer$(EXT) hexln$(EXT) hex2blf$(EXT) blfchk$(EXT) ecmtabgen$(EXT) filehex$(EXT)
+BINARIES = brainflayer$(EXT) hexln$(EXT) hex2blf$(EXT) blfchk$(EXT) ecmtabgen$(EXT) filehex$(EXT) addr2hex$(EXT)
 CFLAGS = -O3 \
          -flto -funsigned-char -falign-functions=16 -falign-loops=16 -falign-jumps=16 \
          -Wall -Wextra -Wno-pointer-sign -Wno-sign-compare -Wno-deprecated-declarations \
@@ -34,23 +34,13 @@ VALGRIND ?= valgrind
 
 all: $(BINARIES)
 
-.git:
-	@echo 'This does not look like a cloned git repo. Unable to fetch submodules.'
-	@false
-
-secp256k1/.libs/libsecp256k1.a: .git
-	git submodule init
-	git submodule update
+secp256k1/.libs/libsecp256k1.a:
 	cd secp256k1; make distclean || true
 	cd secp256k1; ./autogen.sh
 	cd secp256k1; ./configure
 	cd secp256k1; make
 
 secp256k1/include/secp256k1.h: secp256k1/.libs/libsecp256k1.a
-
-scrypt-jane/scrypt-jane.h: .git
-	git submodule init
-	git submodule update
 
 scrypt-jane/scrypt-jane.o: scrypt-jane/scrypt-jane.h scrypt-jane/scrypt-jane.c
 	cd scrypt-jane; gcc -O3 -DSCRYPT_SALSA -DSCRYPT_SHA256 -c scrypt-jane.c -o scrypt-jane.o
@@ -82,6 +72,9 @@ ecmtabgen$(EXT): ecmtabgen.o mmapf.o ec_pubkey_fast.o
 	$(COMPILE) $^ $(LIBS) -o $@
 
 filehex$(EXT): filehex.o hex.o
+	$(COMPILE) $^ $(LIBS) -o $@
+
+addr2hex$(EXT): addr2hex.o hex.o
 	$(COMPILE) $^ $(LIBS) -o $@
 
 brainflayer$(EXT): brainflayer.o $(OBJ_UTIL) $(OBJ_ALGO) \
