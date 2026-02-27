@@ -11,7 +11,9 @@
 #include <errno.h>
 
 #include <sys/types.h>
-#ifndef _WIN32
+#ifdef _WIN32
+# include "win_compat.h"
+#else
 # include <sys/time.h>
 #endif
 

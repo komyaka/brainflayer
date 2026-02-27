@@ -8,6 +8,10 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 
+#ifdef _WIN32
+# include "win_compat.h"
+#endif
+
 #include <math.h> /* pow/exp */
 
 #include "hex.h"
