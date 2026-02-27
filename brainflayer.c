@@ -1,4 +1,7 @@
 /* Copyright (c) 2015 Ryan Castellucci, All Rights Reserved */
+#ifndef _GNU_SOURCE
+# define _GNU_SOURCE
+#endif
 #include <time.h>
 #include <assert.h>
 #include <stdlib.h>
