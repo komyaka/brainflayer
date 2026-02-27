@@ -17,7 +17,6 @@
 #include "secp256k1/src/util.h"
 #include "secp256k1/src/num_impl.h"
 #include "secp256k1/src/field_impl.h"
-#include "secp256k1/src/field_10x26_impl.h"
 #include "secp256k1/src/scalar_impl.h"
 #include "secp256k1/src/group_impl.h"
 #include "secp256k1/src/ecmult_gen_impl.h"
@@ -45,6 +44,10 @@ int remmining = 0;
 int WINDOW_SIZE = 0;
 size_t MMAP_SIZE;
 mmapf_ctx prec_mmapf;
+#ifdef USE_ENDOMORPHISM
+int n_half = 0;         /* windows per half-scalar (GLV decomposition) */
+int remmining_half = 0; /* 128 % WINDOW_SIZE */
+#endif
 
 int secp256k1_ec_pubkey_precomp_table_save(int window_size, unsigned char *filename) {
   int fd, ret;
@@ -85,12 +88,24 @@ int secp256k1_ec_pubkey_precomp_table(int window_size, unsigned char *filename) 
   for (;;) {
     WINDOW_SIZE = window_size;
     n_values = 1 << window_size;
+#ifdef USE_ENDOMORPHISM
+    /* GLV: each scalar is ~128 bits; use two half-tables */
+    if (128 % window_size == 0) {
+      n_half = (128 / window_size);
+    } else {
+      n_half = (128 / window_size) + 1;
+    }
+    remmining_half = 128 % window_size;
+    n_windows = 2 * n_half;
+    remmining = remmining_half;
+#else
     if (256 % window_size == 0) {
       n_windows = (256 / window_size);
     } else {
       n_windows = (256 / window_size) + 1;
     }
     remmining = 256 % window_size;
+#endif
     prec_sz = n_windows*n_values*sizeof(secp256k1_ge_t);
     if (!filename || sb.st_size <= prec_sz)
       break;
@@ -108,7 +123,12 @@ int secp256k1_ec_pubkey_precomp_table(int window_size, unsigned char *filename) 
 
   if (filename) { return 0; }
 
+#ifdef USE_ENDOMORPHISM
+  /* GLV: build only n_half windows for G table, then apply endomorphism for lambda*G table */
+  table = malloc(n_half*n_values*sizeof(secp256k1_gej_t));
+#else
   table = malloc(n_windows*n_values*sizeof(secp256k1_gej_t));
+#endif
 
   secp256k1_gej_set_ge(&gj, &secp256k1_ge_const_g);
 
@@ -128,6 +148,32 @@ int secp256k1_ec_pubkey_precomp_table(int window_size, unsigned char *filename) 
   gbase = gj; /* (2^w_size)^num_of_windows * G */
   numsbase = nums_gej; /* 2^num_of_windows * nums. */
 
+#ifdef USE_ENDOMORPHISM
+  /* Build G table: n_half windows, numsbase sums to 0 */
+  for (int j = 0; j < n_half; j++) {
+    table[j*n_values] = numsbase;
+    for (int i = 1; i < n_values; i++) {
+      secp256k1_gej_add_var(&table[j*n_values + i], &table[j*n_values + i - 1], &gbase, NULL);
+    }
+    for (int i = 0; i < window_size; i++) {
+      secp256k1_gej_double_var(&gbase, &gbase, NULL);
+    }
+    secp256k1_gej_double_var(&numsbase, &numsbase, NULL);
+    if (j == n_half-2) {
+      secp256k1_gej_neg(&numsbase, &numsbase);
+      secp256k1_gej_add_var(&numsbase, &numsbase, &nums_gej, NULL);
+    }
+  }
+  /* Convert G table to affine (first n_half windows of prec) */
+  secp256k1_ge_set_all_gej_var(n_half*n_values, prec, table, 0);
+
+  /* Build lambda*G table: apply endomorphism to G table entries */
+  for (int j = 0; j < n_half; j++) {
+    for (int i = 0; i < n_values; i++) {
+      secp256k1_ge_mul_lambda(&prec[(n_half+j)*n_values + i], &prec[j*n_values + i]);
+    }
+  }
+#else
   for (int j = 0; j < n_windows; j++) {
     //[number of windows][each value from 0 - (2^window_size - 1)]
     table[j*n_values] = numsbase;
@@ -147,11 +193,60 @@ int secp256k1_ec_pubkey_precomp_table(int window_size, unsigned char *filename) 
     }
   }
   secp256k1_ge_set_all_gej_var(n_windows*n_values, prec, table, 0);
+#endif
 
   free(table);
   return 0;
 }
 
+#ifdef USE_ENDOMORPHISM
+static void secp256k1_ecmult_gen2(secp256k1_gej_t *r, const unsigned char *seckey){
+  secp256k1_scalar_t k, k1, k2;
+  int sign1, sign2;
+  unsigned char b1[32], b2[32];
+  unsigned char a1[128], a2[128]; /* lower 128 bits of each half-scalar */
+  int bits;
+
+  secp256k1_scalar_set_b32(&k, seckey, NULL);
+  secp256k1_scalar_split_lambda(&k1, &k2, &k);
+
+  /* Ensure k1, k2 are positive (negate if > n/2) */
+  sign1 = secp256k1_scalar_is_high(&k1);
+  if (sign1) secp256k1_scalar_negate(&k1, &k1);
+  sign2 = secp256k1_scalar_is_high(&k2);
+  if (sign2) secp256k1_scalar_negate(&k2, &k2);
+
+  secp256k1_scalar_get_b32(b1, &k1);
+  secp256k1_scalar_get_b32(b2, &k2);
+
+  /* Extract lower 128 bits (bytes 16-31 in big-endian = bits 0-127) */
+  for (int j = 0; j < 16; j++) {
+    for (int i = 0; i < 8; i++) {
+      a1[i + j*8] = READBIT(b1[31-j], i);
+      a2[i + j*8] = READBIT(b2[31-j], i);
+    }
+  }
+
+  secp256k1_gej_t r1, r2;
+  r1.infinity = 1;
+  r2.infinity = 1;
+
+  for (int j = 0; j < n_half; j++) {
+    int w = (j == n_half-1 && remmining_half != 0) ? remmining_half : WINDOW_SIZE;
+    bits = 0;
+    for (int i = 0; i < w; i++) SETBIT(bits, i, a1[i + j*WINDOW_SIZE]);
+    secp256k1_gej_add_ge_var(&r1, &r1, &prec[j*n_values + bits], NULL);
+
+    bits = 0;
+    for (int i = 0; i < w; i++) SETBIT(bits, i, a2[i + j*WINDOW_SIZE]);
+    secp256k1_gej_add_ge_var(&r2, &r2, &prec[(n_half+j)*n_values + bits], NULL);
+  }
+
+  if (sign1) secp256k1_gej_neg(&r1, &r1);
+  if (sign2) secp256k1_gej_neg(&r2, &r2);
+  secp256k1_gej_add_var(r, &r1, &r2, NULL);
+}
+#else
 static void secp256k1_ecmult_gen2(secp256k1_gej_t *r, const unsigned char *seckey){
   unsigned char a[256];
   for (int j = 0; j < 32; j++) {
@@ -175,13 +270,10 @@ static void secp256k1_ecmult_gen2(secp256k1_gej_t *r, const unsigned char *secke
         SETBIT(bits,i,a[i + j * WINDOW_SIZE]);
       }
     }
-#if 1
     secp256k1_gej_add_ge_var(r, r, &prec[j*n_values + bits], NULL);
-#else
-    secp256k1_gej_add_ge(r, r, &prec[j*n_values + bits]);
-#endif
   }
 }
+#endif
 
 #ifdef USE_BL_ARITHMETIC
 static void secp256k1_gej_add_ge_bl(secp256k1_gej_t *r, const secp256k1_gej_t *a, const secp256k1_ge_t *b, secp256k1_fe_t *rzr) {
@@ -244,6 +336,52 @@ static void secp256k1_gej_add_ge_bl(secp256k1_gej_t *r, const secp256k1_gej_t *a
 
 }
 
+#ifdef USE_ENDOMORPHISM
+static void secp256k1_ecmult_gen_bl(secp256k1_gej_t *r, const unsigned char *seckey){
+  secp256k1_scalar_t k, k1, k2;
+  int sign1, sign2;
+  unsigned char b1[32], b2[32];
+  unsigned char a1[128], a2[128];
+  int bits;
+
+  secp256k1_scalar_set_b32(&k, seckey, NULL);
+  secp256k1_scalar_split_lambda(&k1, &k2, &k);
+
+  sign1 = secp256k1_scalar_is_high(&k1);
+  if (sign1) secp256k1_scalar_negate(&k1, &k1);
+  sign2 = secp256k1_scalar_is_high(&k2);
+  if (sign2) secp256k1_scalar_negate(&k2, &k2);
+
+  secp256k1_scalar_get_b32(b1, &k1);
+  secp256k1_scalar_get_b32(b2, &k2);
+
+  for (int j = 0; j < 16; j++) {
+    for (int i = 0; i < 8; i++) {
+      a1[i + j*8] = READBIT(b1[31-j], i);
+      a2[i + j*8] = READBIT(b2[31-j], i);
+    }
+  }
+
+  secp256k1_gej_t r1, r2;
+  r1.infinity = 1;
+  r2.infinity = 1;
+
+  for (int j = 0; j < n_half; j++) {
+    int w = (j == n_half-1 && remmining_half != 0) ? remmining_half : WINDOW_SIZE;
+    bits = 0;
+    for (int i = 0; i < w; i++) SETBIT(bits, i, a1[i + j*WINDOW_SIZE]);
+    secp256k1_gej_add_ge_bl(&r1, &r1, &prec[j*n_values + bits], NULL);
+
+    bits = 0;
+    for (int i = 0; i < w; i++) SETBIT(bits, i, a2[i + j*WINDOW_SIZE]);
+    secp256k1_gej_add_ge_bl(&r2, &r2, &prec[(n_half+j)*n_values + bits], NULL);
+  }
+
+  if (sign1) secp256k1_gej_neg(&r1, &r1);
+  if (sign2) secp256k1_gej_neg(&r2, &r2);
+  secp256k1_gej_add_var(r, &r1, &r2, NULL);
+}
+#else
 static void secp256k1_ecmult_gen_bl(secp256k1_gej_t *r, const unsigned char *seckey){
   unsigned char a[256];
   for (int j = 0; j < 32; j++){
@@ -272,6 +410,7 @@ static void secp256k1_ecmult_gen_bl(secp256k1_gej_t *r, const unsigned char *sec
     secp256k1_gej_add_ge_bl(r, r, &prec[j*n_values + bits], NULL);
   }
 }
+#endif
 #endif
 
 int secp256k1_ec_pubkey_create_precomp(unsigned char *pub_chr, int *pub_chr_sz, const unsigned char *seckey) {
