@@ -534,3 +534,14 @@ DETAILS: All acceptance criteria met; all agent phases VERIFIED; make test passe
 | 2026-02-26T14:06:00Z | Refactor phase completed: OpenSSL deprecation suppressed |
 | 2026-02-26T14:08:00Z | Docs phase completed: README perf comparison added, CHANGELOG created |
 | 2026-02-26T14:10:00Z | Auditor phase completed: all criteria VERIFIED, make test passes with E2E tests |
+| 2026-02-27T05:49:26Z | Ubuntu 24 + Windows support phase started |
+| 2026-02-27T05:55:00Z | Created win_compat.h: Windows compat shims (ntohl, sysinfo, mmap stubs, posix no-ops) |
+| 2026-02-27T05:55:00Z | Updated mmapf.h: added aux field for Windows HANDLE |
+| 2026-02-27T05:55:00Z | Updated mmapf.c: full Windows CreateFileMapping/MapViewOfFile implementation; fixed POSIX fd storage |
+| 2026-02-27T05:55:00Z | Fixed brainflayer.c: sys/sysinfo.h conditional on __linux__; _WIN32 RAM check via GlobalMemoryStatusEx |
+| 2026-02-27T05:55:00Z | Fixed hsearchf.c: replaced arpa/inet.h with win_compat.h; removed unused sys/mman.h |
+| 2026-02-27T05:55:00Z | Fixed blfchk.c: added -i INPUTFILE option (fixes ifile leak #6); removed unused headers |
+| 2026-02-27T05:55:00Z | Fixed hex2blf.c: removed unused arpa/inet.h |
+| 2026-02-27T05:55:00Z | Fixed Makefile: sanitize now builds brainflayer (#7); platform-conditional LIBS; binary $(EXT) |
+| 2026-02-27T05:55:00Z | Updated ci.yml: ubuntu-24.04 explicit; added Windows CI job via MSYS2/MinGW64 |
+| 2026-02-27T05:55:00Z | make test verified passing on Ubuntu 24.04 / gcc 13.3.0; CodeQL: 0 alerts |
