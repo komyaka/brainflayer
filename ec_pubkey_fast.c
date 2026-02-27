@@ -10,7 +10,9 @@
 
 #include <sys/types.h>
 #include <sys/stat.h>
-#include <sys/mman.h>
+#ifndef _WIN32
+# include <sys/mman.h>
+#endif
 
 #include "secp256k1/src/libsecp256k1-config.h"
 #include "secp256k1/include/secp256k1.h"

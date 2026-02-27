@@ -21,6 +21,7 @@
 # include <winsock2.h>   /* ntohl / htonl */
 # include <windows.h>    /* HANDLE, VirtualAlloc, CreateFileMapping, … */
 # include <io.h>         /* _open, _close, _read, _write */
+# include <getopt.h>     /* getopt, optarg, optind */
 # include <sys/stat.h>   /* stat, S_ISREG */
 # include <stdint.h>
 # include <stdlib.h>

@@ -1,12 +1,9 @@
 /*  Copyright (c) 2015 Ryan Castellucci, All Rights Reserved */
-#include <unistd.h>
 #include <assert.h>
 #include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
-#include <signal.h>
 #include <stdio.h>
-#include <fcntl.h>
 
 #include <sys/stat.h>
 #include <sys/types.h>

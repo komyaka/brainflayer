@@ -21,7 +21,7 @@ else
 endif
 
 BINARIES = brainflayer$(EXT) hexln$(EXT) hex2blf$(EXT) blfchk$(EXT) ecmtabgen$(EXT) filehex$(EXT) addr2hex$(EXT)
-CFLAGS = -O3 \
+CFLAGS = -O3 -D_GNU_SOURCE \
          -flto -funsigned-char -falign-functions=16 -falign-loops=16 -falign-jumps=16 \
          -Wall -Wextra -Wno-pointer-sign -Wno-sign-compare -Wno-deprecated-declarations \
          -pedantic -std=gnu99
