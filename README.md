@@ -69,12 +69,84 @@ sudo dnf install gcc make openssl-devel gmp-devel
 | `libgmp-dev` | GNU MP — арифметика больших чисел для secp256k1 |
 | `librt` | POSIX real-time (обычно входит в состав glibc) |
 
-### Встроенные подмодули (git submodules)
+### Встроенные библиотеки (vendored)
 
-| Подмодуль | Назначение |
+Библиотеки `secp256k1` и `scrypt-jane` включены непосредственно в репозиторий и не требуют инициализации git-подмодулей.
+
+| Библиотека | Назначение |
 |---|---|
 | `secp256k1/` | Оптимизированная библиотека для вычислений на эллиптической кривой (Bitcoin Core) |
 | `scrypt-jane/` | Реализация scrypt для WarpWallet, brainwallet.io, brainv2 |
+
+## Установка
+
+### Linux / macOS (UNIX)
+
+#### Debian / Ubuntu
+
+```bash
+# Установить зависимости
+sudo apt-get install build-essential libssl-dev libgmp-dev autoconf libtool
+
+# Клонировать репозиторий и собрать
+git clone https://github.com/komyaka/brainflayer
+cd brainflayer
+make
+```
+
+#### Fedora / RHEL / CentOS
+
+```bash
+sudo dnf install gcc make openssl-devel gmp-devel autoconf libtool
+git clone https://github.com/komyaka/brainflayer
+cd brainflayer
+make
+```
+
+#### macOS (Homebrew)
+
+```bash
+brew install openssl gmp autoconf automake libtool
+git clone https://github.com/komyaka/brainflayer
+cd brainflayer
+# Если OpenSSL не найден автоматически:
+export CFLAGS="-I$(brew --prefix openssl)/include"
+export LDFLAGS="-L$(brew --prefix openssl)/lib"
+make
+```
+
+### Windows
+
+Рекомендуется использовать **MSYS2** (MinGW-w64) или **WSL** (Windows Subsystem for Linux).
+
+#### Вариант 1 — MSYS2 (MinGW-w64)
+
+1. Скачать и установить [MSYS2](https://www.msys2.org/).
+2. Открыть **MSYS2 MinGW 64-bit** (mingw64) shell и выполнить:
+
+```bash
+# Установить необходимые пакеты
+pacman -S mingw-w64-x86_64-gcc mingw-w64-x86_64-make \
+          mingw-w64-x86_64-openssl mingw-w64-x86_64-gmp \
+          autoconf automake libtool git
+
+# Клонировать и собрать
+git clone https://github.com/komyaka/brainflayer
+cd brainflayer
+mingw32-make
+```
+
+> Зависимости для Windows: `mingw-w64-x86_64-gcc`, `mingw-w64-x86_64-openssl`, `mingw-w64-x86_64-gmp`.  
+> Компоновщик дополнительно требует `-lws2_32` (Winsock2) — это автоматически подхватывается Makefile.
+
+#### Вариант 2 — WSL (Ubuntu)
+
+```bash
+# Включить WSL и установить Ubuntu (через Microsoft Store или командную строку)
+wsl --install -d Ubuntu
+
+# Затем следовать инструкциям для Debian / Ubuntu выше
+```
 
 ---
 
@@ -83,12 +155,11 @@ sudo dnf install gcc make openssl-devel gmp-devel
 ```bash
 git clone https://github.com/komyaka/brainflayer
 cd brainflayer
-git submodule update --init
 make
 ```
 
 После успешной сборки в директории появятся исполняемые файлы:
-`brainflayer`, `hexln`, `hex2blf`, `blfchk`, `ecmtabgen`, `filehex`
+`brainflayer`, `hexln`, `hex2blf`, `blfchk`, `ecmtabgen`, `filehex`, `addr2hex`
 
 ---
 
@@ -134,6 +205,15 @@ ecmtabgen <window_size> <tablefile.tab>
 
 Утилита для работы с hex-файлами (внутреннее использование).
 
+### `addr2hex` — конвертер Bitcoin-адресов в hex hash160
+
+```
+addr2hex [addressfile.txt]
+```
+
+Читает Bitcoin-адреса в формате Base58Check (P2PKH, начинающиеся с `1`, и P2SH, начинающиеся с `3`) из файла или stdin (по одному на строку), декодирует их и выводит 40-символьные hex-кодированные hash160.  
+Результат можно напрямую передавать в `hex2blf` для построения блум-фильтра.
+
 ---
 
 ## Подготовка блум-фильтра
@@ -146,6 +226,16 @@ ecmtabgen <window_size> <tablefile.tab>
 - **[Utxodump](https://github.com/in3rsha/bitcoin-utxo-dump)** — дамп всех UTXO (только активные адреса)
 - **[Blockchair](https://blockchair.com/dumps)** — готовые дампы адресов
 - **Собственный Bitcoin-узел** — через `bitcoin-cli`
+
+Если у вас список Bitcoin-адресов (не hash160), используйте `addr2hex` для конвертации:
+
+```bash
+# Конвертировать список адресов в hex hash160
+addr2hex bitcoin_addresses.txt > addresses.hex
+
+# Или через пайп
+cat bitcoin_addresses.txt | addr2hex > addresses.hex
+```
 
 Файл должен содержать hex-кодированные hash160, по одному на строку:
 
@@ -460,13 +550,33 @@ cat hashes_to_check.hex | blfchk bitcoin.blf addresses_sorted.hex
 
 ---
 
-### Дополнительный режим вывода (`-a`)
+### Использование `addr2hex`
 
-Дописывать результаты в конец файла (не перезаписывать):
+```bash
+# Конвертировать файл с Bitcoin-адресами в hex hash160
+addr2hex addresses.txt
+
+# Через пайп
+cat addresses.txt | addr2hex
+
+# Полный пайплайн: адреса → hex → блум-фильтр
+addr2hex addresses.txt | hex2blf /dev/stdin bitcoin.blf
+```
+
+Поддерживаются адреса P2PKH (начинаются с `1`) и P2SH (начинаются с `3`).  
+Некорректные строки и адреса с неверной контрольной суммой пропускаются с предупреждением в stderr.
+
+---
+
+### Режим дозаписи в файл (`-a`)
+
+Дописывать результаты в конец существующего файла вывода (не перезаписывать):
 
 ```bash
 brainflayer -b bitcoin.blf -i wordlist.txt -o found.txt -a
 ```
+
+> Флаг `-a` действует только совместно с `-o`. Без `-o` вывод идёт в stdout.
 
 ---
 
@@ -497,9 +607,9 @@ make bench BENCH_B=4096
 
 | Параметр | Флаг | Описание |
 |---|---|---|
-| Размер батча | `-B` | Число ключей, вычисляемых одновременно. По умолчанию 1024, максимум 4096. Батч-вычисления амортизируют стоимость аффинных преобразований. |
-| Размер окна | `-w` | Размер окна для таблицы EC-умножения. По умолчанию 16. Памяти: ~3 × 2^w КиБ при старте, ~2^w КиБ после построения. |
-| Предвычисленная таблица | `-m` | Загрузить готовую таблицу EC-умножения из файла вместо построения при каждом запуске. |
+| Размер батча | `-B` | Число ключей, вычисляемых одновременно. По умолчанию 1024, максимум 4096. Батч-вычисления амортизируют стоимость аффинных преобразований. Оптимальное значение зависит от размера кэша L1/L2 процессора: чем больше кэш — тем эффективнее крупный батч. |
+| Размер окна | `-w` | Размер окна для таблицы EC-умножения. По умолчанию 16. Памяти: ~3 × 2^w КиБ при старте, ~2^w КиБ после построения. Оптимальное значение зависит от доступного объёма RAM и допустимого времени инициализации: больший размер окна даёт выше скорость вычислений, но требует больше памяти и времени на построение таблицы при запуске. |
+| Предвычисленная таблица | `-m` | Загрузить готовую таблицу EC-умножения из файла вместо построения при каждом запуске. Эффективность зависит от частоты перезапусков инструмента: при многократных запусках экономит значительное время инициализации за счёт дискового пространства (~2^w КиБ на файл). |
 
 ### Рекомендации
 
@@ -507,6 +617,19 @@ make bench BENCH_B=4096
 - **Для параллельного запуска** нескольких процессов: делите задачу через `-n K/N`
 - **WarpWallet/bwio/bv2** работают значительно медленнее из-за применения scrypt/PBKDF2 — это ожидаемо и не является ошибкой
 - **Инкрементальный режим** (`-I`) и **rushwallet** (`-t rush`) — наиболее быстрые режимы
+- **Оптимизация под конкретный CPU**: при сборке добавьте `-march=native` для максимального использования векторных инструкций (SSE/AVX):
+
+```bash
+make CFLAGS="-O3 -march=native -flto -funsigned-char -falign-functions=16 -falign-loops=16 -falign-jumps=16 -Wall -Wextra -Wno-pointer-sign -Wno-sign-compare -Wno-deprecated-declarations -pedantic -std=gnu99"
+```
+
+> ⚠️ Бинарный файл, собранный с `-march=native`, будет специфичен для конкретного CPU и может не запуститься на другом оборудовании.
+
+### Примечание о встроенных библиотеках
+
+Проект использует встроенные (vendored) версии:
+- **secp256k1** (версия ~2015, форк ryancdotorg) — используется напрямую через внутренние структуры данных для реализации батч-умножения. Современная [bitcoin-core/secp256k1](https://github.com/bitcoin-core/secp256k1) включает оптимизацию GLV endomorphism (ускорение EC-умножения примерно в 2 раза) и другие улучшения. Переход на неё потребует рефакторинга `ec_pubkey_fast.c`.
+- **scrypt-jane** — специфическая реализация scrypt для WarpWallet/brainwallet.io. Замена требует совместимости с конкретным форматом вызова этих кошельков.
 
 ---
 
