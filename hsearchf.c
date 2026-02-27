@@ -1,16 +1,18 @@
 /* Copyright (c) 2015 Ryan Castellucci, All Rights Reserved */
-#include <unistd.h>
 #include <string.h>
-#include <fcntl.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <stdint.h>
 
-#include <arpa/inet.h> /*  for ntohl/htonl */
+#include "win_compat.h" /* ntohl/htonl; posix_fadvise no-op on Windows */
+
+#ifndef _WIN32
+# include <unistd.h>
+# include <fcntl.h>    /* posix_fadvise */
+#endif
 
 #include <sys/types.h>
 #include <sys/stat.h>
-#include <sys/mman.h>
 
 #include "hex.h"
 #include "hash160.h"

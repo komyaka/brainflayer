@@ -1,6 +1,5 @@
 /* Copyright (c) 2015 Ryan Castellucci, All Rights Reserved */
 #include <time.h>
-#include <unistd.h>
 #include <assert.h>
 #include <stdlib.h>
 #include <stdint.h>
@@ -11,12 +10,17 @@
 #include <errno.h>
 #include <stdbool.h>
 
-#include <openssl/sha.h>
+#ifdef _WIN32
+# include "win_compat.h"
+#else
+# include <unistd.h>
+# include <sys/time.h>
+# ifdef __linux__
+#  include <sys/sysinfo.h>
+# endif
+#endif
 
-#include <sys/time.h>
-#include <sys/wait.h>
-#include <sys/types.h>
-#include <sys/sysinfo.h>
+#include <openssl/sha.h>
 
 #include "ripemd160_256.h"
 
@@ -527,12 +531,23 @@ int main(int argc, char **argv) {
     bail(1, "Invalid window size '%d' - must be >= 1 and <= 28\n", wopt);
   } else {
     // very rough sanity check of window size
+#ifdef __linux__
     struct sysinfo info;
     sysinfo(&info);
-    uint64_t sysram = info.mem_unit * info.totalram;
+    uint64_t sysram = (uint64_t)info.mem_unit * info.totalram;
     if (3584LLU*(1<<wopt) > sysram) {
       bail(1, "Not enough ram for requested window size '%d'\n", wopt);
     }
+#elif defined(_WIN32)
+    MEMORYSTATUSEX ms;
+    ms.dwLength = sizeof(ms);
+    if (GlobalMemoryStatusEx(&ms)) {
+      uint64_t sysram = ms.ullTotalPhys;
+      if (3584LLU*(1<<wopt) > sysram) {
+        bail(1, "Not enough ram for requested window size '%d'\n", wopt);
+      }
+    }
+#endif
   }
 
   if (Bopt) { // if unset, will be set later

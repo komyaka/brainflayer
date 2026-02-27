@@ -7,6 +7,7 @@ typedef struct {
   size_t mmap_sz;
   size_t file_sz;
   int fd;
+  void *aux; /* platform-specific: Windows file-mapping HANDLE */
 } mmapf_ctx;
 
 // file flags

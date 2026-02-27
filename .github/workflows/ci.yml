@@ -9,8 +9,9 @@ permissions:
   contents: read
 
 jobs:
-  build-and-test:
-    runs-on: ubuntu-latest
+  build-and-test-linux:
+    name: Build & Test (Ubuntu 24.04)
+    runs-on: ubuntu-24.04
 
     steps:
       - uses: actions/checkout@v4
@@ -31,3 +32,36 @@ jobs:
 
       - name: Memcheck
         run: make memcheck
+
+  build-and-test-windows:
+    name: Build & Test (Windows / MinGW-w64)
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-make
+            mingw-w64-x86_64-openssl
+            mingw-w64-x86_64-gmp
+            autoconf
+            automake
+            libtool
+            make
+
+      - name: Build utilities (hexln, blfchk, hex2blf, filehex)
+        run: |
+          make hexln.exe blfchk.exe hex2blf.exe filehex.exe tests/normalize_test.exe
+
+      - name: Run normalize tests
+        run: ./tests/normalize_test.exe
