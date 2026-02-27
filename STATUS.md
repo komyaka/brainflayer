@@ -447,9 +447,9 @@ DETAILS: CI workflow created; OpenSSL deprecation warnings suppressed; sanitize 
 ### Changes Made
 | File | Change | Description |
 |---|---|---|
-| README.md | modified | Added build/usage examples, test/memcheck/bench docs, benchmark notes, and Performance Comparison section |
-| CHANGELOG.md | created | Added changelog with Unreleased section documenting all changes |
-| STATUS.md | modified | Updated DOCS status with README and CHANGELOG changes |
+| README.md | rewritten | Complete Russian-language README: project description, pipeline diagram, dependencies, build steps, per-tool docs, bloom filter setup, full usage examples (sha256/sha3/keccak/warp/bwio/bv2/rush/camp2/priv/incremental/parallel/hex/-f), testing/bench targets, performance notes, complete flag reference, licence |
+| CHANGELOG.md | modified | Added entry documenting README rewrite |
+| STATUS.md | modified | Updated DOCS section |
 
 ### Public Interface Changes Documented
 - [x] All new/changed CLI flags documented in README.
@@ -462,8 +462,8 @@ DETAILS: CI workflow created; OpenSSL deprecation warnings suppressed; sanitize 
 STATUS: VERIFIED
 AGENT: docs
 PHASE: documentation
-TIMESTAMP: 2026-02-26T14:10:00Z
-DETAILS: README updated with newline-safe usage examples, test/memcheck/bench outputs, and benchmark summary
+TIMESTAMP: 2026-02-26T15:00:00Z
+DETAILS: README fully rewritten in Russian with comprehensive pipeline description, detailed examples for every supported mode, and complete flag reference.
 ```
 
 ---
