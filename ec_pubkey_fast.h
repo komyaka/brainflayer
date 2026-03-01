@@ -21,4 +21,17 @@ int secp256k1_ec_pubkey_batch_create(unsigned int, unsigned char (*)[65], unsign
 int secp256k1_ec_pubkey_batch_incr(unsigned int, unsigned int, unsigned char (*)[65], unsigned char (*)[32], unsigned char[32]);
 void secp256k1_ec_pubkey_batch_free(void);
 void secp256k1_ec_pubkey_precomp_table_free(void);
+
+/* Per-thread batch context for thread-safe public-key batch creation.
+ * Use secp256k1_ec_pubkey_batch_alloc/dealloc instead of the global
+ * secp256k1_ec_pubkey_batch_init path when running multiple worker threads. */
+typedef struct secp256k1_batch_s secp256k1_batch_t;
+
+int  secp256k1_ec_pubkey_batch_alloc(secp256k1_batch_t **b, unsigned int num);
+void secp256k1_ec_pubkey_batch_dealloc(secp256k1_batch_t *b);
+int  secp256k1_ec_pubkey_batch_create_mt(secp256k1_batch_t *b, unsigned int num,
+         unsigned char (*pub)[65], unsigned char (*sec)[32]);
+int  secp256k1_ec_pubkey_batch_incr_mt(secp256k1_batch_t *b, unsigned int num,
+         unsigned int skip, unsigned char (*pub)[65], unsigned char (*sec)[32],
+         unsigned char start[32]);
 #endif//__EC_PUBKEY_FAST_H_

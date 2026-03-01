@@ -21,6 +21,7 @@
 # ifdef __linux__
 #  include <sys/sysinfo.h>
 # endif
+# include <pthread.h>
 #endif
 
 #include <openssl/sha.h>
@@ -56,8 +57,54 @@ static unsigned char *mem;
 static mmapf_ctx bloom_mmapf;
 static unsigned char *bloom = NULL;
 
-static unsigned char *unhexed = NULL;
-static size_t unhexed_sz = 4096;
+/* ---------- shared config (set by main before workers start) -------------- */
+static FILE          *ifile      = NULL;
+static FILE          *ofile      = NULL;
+static FILE          *ffile      = NULL;
+static int            vopt       = 0;
+static int            xopt       = 0;
+static int            tty        = 0;
+static int            nopt_mod   = 0;
+static int            nopt_rem   = 0;
+static int            Bopt       = 0;
+static int            g_skipping = 0;
+static uint64_t       kopt       = 0;
+static uint64_t       Nopt       = ~0ULL;
+static unsigned char *fopt       = NULL;
+static unsigned char *Iopt       = NULL;
+static unsigned char  modestr[64];
+static pubhashfn_t    pubhashfn[8];
+
+/* ---------- threading state ----------------------------------------------- */
+#ifndef _WIN32
+static pthread_mutex_t input_mutex  = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t output_mutex = PTHREAD_MUTEX_INITIALIZER;
+#endif
+static volatile uint64_t g_ilines_curr = 0;
+static volatile uint64_t g_olines      = 0;
+static volatile int64_t  g_raw_lines   = -1;
+static volatile int       g_eof        = 0;
+
+typedef struct {
+  int    thread_id;
+  int    num_threads;
+  secp256k1_batch_t *batch_ctx;
+  char          *batch_line[BATCH_MAX];
+  size_t         batch_line_sz[BATCH_MAX];
+  size_t         batch_line_read[BATCH_MAX];
+  unsigned char  batch_priv[BATCH_MAX][32];
+  unsigned char  batch_upub[BATCH_MAX][65];
+  unsigned char *unhexed;
+  size_t         unhexed_sz;
+  unsigned char  start_priv[32]; /* incremental mode: per-thread start */
+  /* stats (thread 0 only, when vopt) */
+  uint64_t time_start;
+  uint64_t time_last;
+  uint64_t ilines_last;
+  float    ilines_rate_avg;
+  uint64_t report_mask;
+  float    alpha;
+} worker_ctx_t;
 
 #define bail(code, ...) \
 do { \
@@ -97,7 +144,6 @@ static inline void brainflayer_init_globals() {
   if (!brainflayer_is_init) {
     /* initialize buffers */
     mem = chkmalloc(4096);
-    unhexed = chkmalloc(unhexed_sz);
 
     /* set the flag */
     brainflayer_is_init = 1;
@@ -334,6 +380,216 @@ inline static void fprintresult(FILE *f, hash160_t *hash,
           input);
 }
 
+/* Add a 64-bit unsigned integer to a 32-byte big-endian private key.
+ * The addition wraps silently on overflow (modulo 2^256), which is
+ * fine in practice because secp256k1 scalars are always reduced mod n. */
+static void priv_add_uint64(unsigned char *priv, uint64_t add) {
+  uint64_t carry = add;
+  int i;
+  for (i = 31; i >= 0 && carry; i--) {
+    carry += priv[i];
+    priv[i] = (unsigned char)(carry & 0xFF);
+    carry >>= 8;
+  }
+}
+
+/* ---------- worker thread ------------------------------------------------- */
+static void *worker_run(void *arg) {
+  worker_ctx_t *ctx = (worker_ctx_t *)arg;
+  int i, j;
+  int batch_stopped;
+  hash160_t hash160;
+
+  for (;;) {
+    if (Iopt) {
+      /* Incremental mode: each thread has its own starting key.
+       * After each batch, advance by num_threads * Bopt * nopt_mod. */
+      secp256k1_ec_pubkey_batch_incr_mt(ctx->batch_ctx, Bopt, nopt_mod,
+          ctx->batch_upub, ctx->batch_priv, ctx->start_priv);
+      priv_add_uint64(ctx->start_priv,
+          (uint64_t)ctx->num_threads * Bopt * nopt_mod);
+      batch_stopped = Bopt;
+    } else {
+      /* Dictionary mode: serialise reads from the shared input file. */
+      batch_stopped = 0;
+#ifndef _WIN32
+      pthread_mutex_lock(&input_mutex);
+#endif
+      if (!g_eof) {
+        for (i = 0; i < Bopt;) {
+          ssize_t line_read = getline(&ctx->batch_line[i],
+                                      &ctx->batch_line_sz[i], ifile);
+          if (line_read <= -1) { g_eof = 1; break; }
+
+          ctx->batch_line_read[i] = normalize_line(ctx->batch_line[i],
+                                                   (size_t)line_read);
+          if (g_skipping) {
+            ++g_raw_lines;
+            if (kopt && g_raw_lines < (int64_t)kopt) { continue; }
+            if (nopt_mod && g_raw_lines % nopt_mod != nopt_rem) { continue; }
+          }
+
+          if (xopt) {
+            if (ctx->batch_line_read[i] & 1) {
+              fprintf(stderr,
+                "input length %zu is not even for hex decoding, skipping\n",
+                ctx->batch_line_read[i]);
+              continue;
+            }
+            if (ctx->batch_line_read[i] / 2 > ctx->unhexed_sz) {
+              ctx->unhexed_sz = ctx->batch_line_read[i];
+              ctx->unhexed = chkrealloc(ctx->unhexed, ctx->unhexed_sz);
+            }
+            unhex((unsigned char *)ctx->batch_line[i],
+                  ctx->batch_line_read[i],
+                  ctx->unhexed, ctx->unhexed_sz);
+            if (input2priv(ctx->batch_priv[i], ctx->unhexed,
+                           ctx->batch_line_read[i] / 2) != 0) {
+              fprintf(stderr, "input2priv failed! continuing...\n");
+            }
+          } else {
+            if (input2priv(ctx->batch_priv[i],
+                           (unsigned char *)ctx->batch_line[i],
+                           ctx->batch_line_read[i]) != 0) {
+              fprintf(stderr, "input2priv failed! continuing...\n");
+            }
+          }
+          ++i;
+        }
+        batch_stopped = i;
+      }
+#ifndef _WIN32
+      pthread_mutex_unlock(&input_mutex);
+#endif
+
+      if (batch_stopped > 0) {
+        secp256k1_ec_pubkey_batch_create_mt(ctx->batch_ctx, batch_stopped,
+            ctx->batch_upub, ctx->batch_priv);
+      }
+    }
+
+    /* Process public keys */
+    for (i = 0; i < batch_stopped; ++i) {
+      if (bloom) { /* crack mode */
+        for (j = 0; pubhashfn[j].fn != NULL; ++j) {
+          pubhashfn[j].fn(&hash160, ctx->batch_upub[i]);
+          if (!bloom_chk_hash160(bloom, hash160.ul)) { continue; }
+#ifndef _WIN32
+          pthread_mutex_lock(&output_mutex);
+#endif
+          if (!fopt || hsearchf(ffile, &hash160)) {
+            if (tty) { fprintf(ofile, "\033[0K"); }
+            if (Iopt) {
+              hex(ctx->batch_priv[i], 32,
+                  (unsigned char *)ctx->batch_line[i], 65);
+            }
+            fprintresult(ofile, &hash160, pubhashfn[j].id, modestr,
+                         (unsigned char *)ctx->batch_line[i]);
+#ifndef _WIN32
+            __atomic_fetch_add(&g_olines, 1, __ATOMIC_RELAXED);
+#else
+            ++g_olines;
+#endif
+          }
+#ifndef _WIN32
+          pthread_mutex_unlock(&output_mutex);
+#endif
+        }
+      } else { /* generate mode */
+#ifndef _WIN32
+        pthread_mutex_lock(&output_mutex);
+#endif
+        if (Iopt) {
+          hex(ctx->batch_priv[i], 32,
+              (unsigned char *)ctx->batch_line[i], 65);
+        }
+        j = 0;
+        while (pubhashfn[j].fn != NULL) {
+          pubhashfn[j].fn(&hash160, ctx->batch_upub[i]);
+          fprintresult(ofile, &hash160, pubhashfn[j].id, modestr,
+                       (unsigned char *)ctx->batch_line[i]);
+          ++j;
+        }
+#ifndef _WIN32
+        pthread_mutex_unlock(&output_mutex);
+#endif
+      }
+    }
+    /* end public key loop */
+
+#ifndef _WIN32
+    uint64_t ic = __atomic_add_fetch(&g_ilines_curr, batch_stopped,
+                                     __ATOMIC_RELAXED);
+#else
+    g_ilines_curr += batch_stopped;
+    uint64_t ic = g_ilines_curr;
+#endif
+
+    /* Stats (thread 0 only, mirrors original single-thread behaviour).
+     * The original code incremented ilines_curr once unconditionally and
+     * once more inside the vopt block, effectively doubling the counter in
+     * verbose mode.  That affects the -N exit threshold when -v is active,
+     * so we replicate the same pattern here to keep single-thread semantics
+     * identical. */
+    if (vopt && ctx->thread_id == 0) {
+      /* second increment – matches original "ilines_curr += batch_stopped"
+       * inside the vopt block */
+#ifndef _WIN32
+      ic = __atomic_add_fetch(&g_ilines_curr, batch_stopped, __ATOMIC_RELAXED);
+#else
+      g_ilines_curr += batch_stopped;
+      ic = g_ilines_curr;
+#endif
+      if (batch_stopped < Bopt || (ic & ctx->report_mask) == 0) {
+        uint64_t time_curr    = getns();
+        uint64_t time_delta   = time_curr - ctx->time_last;
+        uint64_t time_elapsed = time_curr - ctx->time_start;
+        ctx->time_last        = time_curr;
+        uint64_t ilines_delta = ic - ctx->ilines_last;
+        ctx->ilines_last      = ic;
+        float ilines_rate = (ilines_delta * 1.0e9) / (time_delta * 1.0);
+
+        if (batch_stopped < Bopt) {
+          ctx->ilines_rate_avg = (ic * 1.0e9) / (time_elapsed * 1.0);
+        } else if (ctx->ilines_rate_avg < 0) {
+          ctx->ilines_rate_avg = ilines_rate;
+        } else if (time_delta < 2500000000ULL) {
+          ctx->report_mask = (ctx->report_mask << 1) | 1;
+          ctx->ilines_rate_avg = ilines_rate;
+        } else if (time_delta > 10000000000ULL) {
+          ctx->report_mask >>= 1;
+          ctx->ilines_rate_avg = ilines_rate;
+        } else {
+          ctx->ilines_rate_avg = ctx->alpha * ilines_rate
+                               + (1 - ctx->alpha) * ctx->ilines_rate_avg;
+        }
+
+        fprintf(stderr,
+            "\033[0G\033[2K"
+            " rate: %9.2f p/s"
+            " found: %5zu/%-10zu"
+            " elapsed: %8.3f s"
+            "\033[0G",
+            ctx->ilines_rate_avg,
+            (size_t)g_olines,
+            (size_t)ic,
+            time_elapsed / 1.0e9
+        );
+        fflush(stderr);
+      }
+    }
+
+    /* Exit condition */
+    if (batch_stopped < Bopt || g_eof || ic >= Nopt) {
+      if (vopt && ctx->thread_id == 0) { fprintf(stderr, "\n"); }
+      break;
+    }
+  }
+
+  return NULL;
+}
+/* -------------------------------------------------------------------------- */
+
 void usage(unsigned char *name) {
   printf("Usage: %s [OPTION]...\n\n\
  -a                          open output file in append mode\n\
@@ -377,69 +633,42 @@ void usage(unsigned char *name) {
  -m FILE                     load ecmult table from FILE\n\
                              the ecmtabgen tool can build such a table\n\
  -v                          verbose - display cracking progress\n\
+ -j THREADS                  number of worker threads (default: 1)\n\
   -h                          show this help\n", name, BATCH_DEFAULT, BATCH_MAX);
 //q, --quiet                 suppress non-error messages
   exit(1);
 }
 
 int main(int argc, char **argv) {
-  FILE *ifile = stdin;
-  FILE *ofile = stdout;
-  FILE *ffile = NULL;
+  ifile = stdin;
+  ofile = stdout;
 
-  int ret, c, i, j;
-
-  float alpha, ilines_rate, ilines_rate_avg;
-  int64_t raw_lines = -1;
-  uint64_t report_mask = 0;
-  uint64_t time_last, time_curr, time_delta;
-  uint64_t time_start, time_elapsed;
-  uint64_t ilines_last, ilines_curr, ilines_delta;
-  uint64_t olines;
-
-  int skipping = 0, tty = 0;
+  int ret, c, i;
   bool free_kdfsalt = false;
 
-  unsigned char modestr[64];
-
-  int spok = 0, aopt = 0, vopt = 0, wopt = 16, xopt = 0;
-  int nopt_mod = 0, nopt_rem = 0, Bopt = 0;
-  uint64_t kopt = 0, Nopt = ~0ULL;
+  int spok = 0, aopt = 0, wopt = 16, jopt = 1;
   unsigned char *bopt = NULL, *iopt = NULL, *oopt = NULL;
   unsigned char *topt = NULL, *sopt = NULL, *popt = NULL;
-  unsigned char *mopt = NULL, *fopt = NULL, *ropt = NULL;
-  unsigned char *Iopt = NULL, *copt = NULL;
+  unsigned char *mopt = NULL, *ropt = NULL, *copt = NULL;
 
-  unsigned char priv[64];
-  hash160_t hash160;
-  pubhashfn_t pubhashfn[8];
+  unsigned char priv[32];
   memset(pubhashfn, 0, sizeof(pubhashfn));
 
-  int batch_stopped = -1;
-  char *batch_line[BATCH_MAX];
-  size_t batch_line_sz[BATCH_MAX];
-  size_t batch_line_read[BATCH_MAX];
-  unsigned char batch_priv[BATCH_MAX][32];
-  unsigned char batch_upub[BATCH_MAX][65];
-  memset(batch_line, 0, sizeof(batch_line));
-  memset(batch_line_sz, 0, sizeof(batch_line_sz));
-  memset(batch_line_read, 0, sizeof(batch_line_read));
-
-  while ((c = getopt(argc, argv, "avxb:hi:k:f:m:n:o:p:s:r:c:t:w:I:N:B:")) != -1) {
+  while ((c = getopt(argc, argv, "avxb:hi:j:k:f:m:n:o:p:s:r:c:t:w:I:N:B:")) != -1) {
     switch (c) {
       case 'a':
         aopt = 1; // open output file in append mode
         break;
       case 'k':
         kopt = strtoull(optarg, NULL, 10); // skip first k lines of input
-        skipping = 1;
+        g_skipping = 1;
         break;
       case 'n':
         // only try the rem'th of every mod lines (one indexed)
         nopt_rem = atoi(optarg) - 1;
         optarg = strchr(optarg, '/');
         if (optarg != NULL) { nopt_mod = atoi(optarg+1); }
-        skipping = 1;
+        g_skipping = 1;
         break;
       case 'B':
         Bopt = atoi(optarg);
@@ -465,6 +694,9 @@ int main(int argc, char **argv) {
         break;
       case 'i':
         iopt = optarg; // input file
+        break;
+      case 'j':
+        jopt = atoi(optarg); // number of worker threads
         break;
       case 'o':
         oopt = optarg; // output file
@@ -530,6 +762,10 @@ int main(int argc, char **argv) {
     }
   }
 
+  if (jopt < 1) {
+    bail(1, "Invalid '-j' argument, must be >= 1\n");
+  }
+
   if (wopt < 1 || wopt > 28) {
     bail(1, "Invalid window size '%d' - must be >= 1 and <= 28\n", wopt);
   } else {
@@ -569,13 +805,8 @@ int main(int argc, char **argv) {
       bail(1, "Cannot specify input type in incremental mode\n");
     }
     topt = "priv";
-    // normally, getline would allocate the batch_line entries, but we need to
-    // do this to give the processing loop somewhere to write to in incr mode
-    for (i = 0; i < BATCH_MAX; ++i) {
-      batch_line[i] = Iopt;
-    }
-    unhex(Iopt, sizeof(priv)*2, priv, sizeof(priv));
-    skipping = 1;
+    unhex(Iopt, 64, priv, 32);
+    g_skipping = 1;
     if (!nopt_mod) { nopt_mod = 1; };
   }
 
@@ -728,187 +959,82 @@ int main(int argc, char **argv) {
     bail(1, "failed to initialize precomputed table\n");
   }
 
-  if (secp256k1_ec_pubkey_batch_init(BATCH_MAX) != 0) {
-    bail(1, "failed to initialize batch point conversion structures\n");
-  }
-
-  ilines_curr = 0;
-
-  if (vopt) {
-    /* initialize timing data */
-    time_start = time_last = getns();
-    olines = ilines_last = 0;
-    ilines_rate_avg = -1;
-    alpha = 0.500;
-  } else {
-    time_start = time_last = 0; // prevent compiler warning about uninitialized use
-  }
-
   // set default batch size
   if (!Bopt) { Bopt = BATCH_DEFAULT; }
 
-  for (;;) {
+  /* Allocate and initialise per-worker contexts */
+  worker_ctx_t *workers = chkmalloc(jopt * sizeof(worker_ctx_t));
+  memset(workers, 0, jopt * sizeof(worker_ctx_t));
+
+  for (i = 0; i < jopt; ++i) {
+    int k;
+    workers[i].thread_id   = i;
+    workers[i].num_threads = jopt;
+
+    if (secp256k1_ec_pubkey_batch_alloc(&workers[i].batch_ctx, BATCH_MAX) != 0) {
+      bail(1, "failed to allocate batch context for thread %d\n", i);
+    }
+
+    workers[i].unhexed_sz = 4096;
+    workers[i].unhexed    = chkmalloc(workers[i].unhexed_sz);
+
     if (Iopt) {
-      if (skipping) {
-        priv_add_uint32(priv, nopt_rem + kopt);
-        skipping = 0;
+      /* Pre-allocate output buffers for hex private key formatting */
+      for (k = 0; k < BATCH_MAX; ++k) {
+        workers[i].batch_line[k]    = chkmalloc(65);
+        workers[i].batch_line_sz[k] = 65;
       }
-      secp256k1_ec_pubkey_batch_incr(Bopt, nopt_mod, batch_upub, batch_priv, priv);
-      memcpy(priv, batch_priv[Bopt-1], 32);
-      priv_add_uint32(priv, nopt_mod);
-
-      batch_stopped = Bopt;
-    } else {
-      for (i = 0; i < Bopt;) {
-        ssize_t line_read = getline(&batch_line[i], &batch_line_sz[i], ifile);
-        if (line_read <= -1) { break; }
-
-        batch_line_read[i] = normalize_line(batch_line[i], (size_t)line_read);
-        if (skipping) {
-          ++raw_lines;
-          if (kopt && raw_lines < kopt) { continue; }
-          if (nopt_mod && raw_lines % nopt_mod != nopt_rem) { continue; }
-        }
-
-        if (xopt) {
-          if (batch_line_read[i] & 1) {
-            fprintf(stderr, "input length %zu is not even for hex decoding, skipping\n", batch_line_read[i]);
-            continue;
-          }
-          if (batch_line_read[i] / 2 > unhexed_sz) {
-            unhexed_sz = batch_line_read[i];
-            unhexed = chkrealloc(unhexed, unhexed_sz);
-          }
-          // rewrite the input line from hex
-          unhex((unsigned char *)batch_line[i], batch_line_read[i], unhexed, unhexed_sz);
-          if (input2priv(batch_priv[i], unhexed, batch_line_read[i]/2) != 0) {
-            fprintf(stderr, "input2priv failed! continuing...\n");
-          }
-        } else {
-          if (input2priv(batch_priv[i], batch_line[i], batch_line_read[i]) != 0) {
-            fprintf(stderr, "input2priv failed! continuing...\n");
-          }
-        }
-        ++i;
-      }
-
-      // save ending value from read loop
-      batch_stopped = i;
-
-      // batch compute the public keys
-      if (batch_stopped > 0) {
-        secp256k1_ec_pubkey_batch_create(batch_stopped, batch_upub, batch_priv);
+      /* Compute per-thread starting key:
+       *   thread t starts at base + (nopt_rem + kopt) steps,
+       *   then additionally t * Bopt * nopt_mod steps ahead. */
+      memcpy(workers[i].start_priv, priv, 32);
+      priv_add_uint64(workers[i].start_priv, (uint64_t)nopt_rem + kopt);
+      if (i > 0) {
+        priv_add_uint64(workers[i].start_priv, (uint64_t)i * Bopt * nopt_mod);
       }
     }
 
-    // loop over the public keys
-    for (i = 0; i < batch_stopped; ++i) {
-      if (bloom) { /* crack mode */
-        // loop over pubkey hash functions
-        for (j = 0; pubhashfn[j].fn != NULL; ++j) {
-          pubhashfn[j].fn(&hash160, batch_upub[i]);
-
-          unsigned int bit;
-          bit = BH00(hash160.ul); if (BLOOM_GET_BIT(bit) == 0) { continue; }
-          bit = BH01(hash160.ul); if (BLOOM_GET_BIT(bit) == 0) { continue; }
-          bit = BH02(hash160.ul); if (BLOOM_GET_BIT(bit) == 0) { continue; }
-          bit = BH03(hash160.ul); if (BLOOM_GET_BIT(bit) == 0) { continue; }
-          bit = BH04(hash160.ul); if (BLOOM_GET_BIT(bit) == 0) { continue; }
-          bit = BH05(hash160.ul); if (BLOOM_GET_BIT(bit) == 0) { continue; }
-          bit = BH06(hash160.ul); if (BLOOM_GET_BIT(bit) == 0) { continue; }
-          bit = BH07(hash160.ul); if (BLOOM_GET_BIT(bit) == 0) { continue; }
-          bit = BH08(hash160.ul); if (BLOOM_GET_BIT(bit) == 0) { continue; }
-          bit = BH09(hash160.ul); if (BLOOM_GET_BIT(bit) == 0) { continue; }
-          bit = BH10(hash160.ul); if (BLOOM_GET_BIT(bit) == 0) { continue; }
-          bit = BH11(hash160.ul); if (BLOOM_GET_BIT(bit) == 0) { continue; }
-          bit = BH12(hash160.ul); if (BLOOM_GET_BIT(bit) == 0) { continue; }
-          bit = BH13(hash160.ul); if (BLOOM_GET_BIT(bit) == 0) { continue; }
-          bit = BH14(hash160.ul); if (BLOOM_GET_BIT(bit) == 0) { continue; }
-          bit = BH15(hash160.ul); if (BLOOM_GET_BIT(bit) == 0) { continue; }
-          bit = BH16(hash160.ul); if (BLOOM_GET_BIT(bit) == 0) { continue; }
-          bit = BH17(hash160.ul); if (BLOOM_GET_BIT(bit) == 0) { continue; }
-          bit = BH18(hash160.ul); if (BLOOM_GET_BIT(bit) == 0) { continue; }
-          bit = BH19(hash160.ul); if (BLOOM_GET_BIT(bit) == 0) { continue; }
-
-          if (!fopt || hsearchf(ffile, &hash160)) {
-            if (tty) { fprintf(ofile, "\033[0K"); }
-            // reformat/populate the line if required
-            if (Iopt) {
-              hex(batch_priv[i], 32, batch_line[i], 65);
-            }
-            fprintresult(ofile, &hash160, pubhashfn[j].id, modestr, batch_line[i]);
-            ++olines;
-          }
-        }
-      } else { /* generate mode */
-        // reformat/populate the line if required
-        if (Iopt) {
-          hex(batch_priv[i], 32, batch_line[i], 65);
-        }
-        j = 0;
-        while (pubhashfn[j].fn != NULL) {
-          pubhashfn[j].fn(&hash160, batch_upub[i]);
-          fprintresult(ofile, &hash160, pubhashfn[j].id, modestr, batch_line[i]);
-          ++j;
-        }
-      }
-    }
-    // end public key processing loop
-
-    ilines_curr += batch_stopped;
-
-    // start stats
-    if (vopt) {
-      ilines_curr += batch_stopped;
-      if (batch_stopped < Bopt || (ilines_curr & report_mask) == 0) {
-        time_curr = getns();
-        time_delta = time_curr - time_last;
-        time_elapsed = time_curr - time_start;
-        time_last = time_curr;
-        ilines_delta = ilines_curr - ilines_last;
-        ilines_last = ilines_curr;
-        ilines_rate = (ilines_delta * 1.0e9) / (time_delta * 1.0);
-
-        if (batch_stopped < Bopt) {
-          /* report overall average on last status update */
-          ilines_rate_avg = (ilines_curr * 1.0e9) / (time_elapsed * 1.0);
-        } else if (ilines_rate_avg < 0) {
-          ilines_rate_avg = ilines_rate;
-        /* target reporting frequency to about once every five seconds */
-        } else if (time_delta < 2500000000) {
-          report_mask = (report_mask << 1) | 1;
-          ilines_rate_avg = ilines_rate; /* reset EMA */
-        } else if (time_delta > 10000000000) {
-          report_mask >>= 1;
-          ilines_rate_avg = ilines_rate; /* reset EMA */
-        } else {
-          /* exponetial moving average */
-          ilines_rate_avg = alpha * ilines_rate + (1 - alpha) * ilines_rate_avg;
-        }
-
-        fprintf(stderr,
-            "\033[0G\033[2K"
-            " rate: %9.2f p/s"
-            " found: %5zu/%-10zu"
-            " elapsed: %8.3f s"
-            "\033[0G",
-            ilines_rate_avg,
-            olines,
-            ilines_curr,
-            time_elapsed / 1.0e9
-        );
-
-        fflush(stderr);
-      }
-    }
-    // end stats
-
-    // main loop exit condition
-    if (batch_stopped < Bopt || ilines_curr >= Nopt) {
-      if (vopt) { fprintf(stderr, "\n"); }
-      break;
+    if (i == 0 && vopt) {
+      workers[i].time_start      = workers[i].time_last = getns();
+      workers[i].ilines_last     = 0;
+      workers[i].ilines_rate_avg = -1;
+      workers[i].report_mask     = 0;
+      workers[i].alpha           = 0.500f;
     }
   }
+
+  /* Dispatch workers */
+#ifndef _WIN32
+  if (jopt > 1) {
+    pthread_t *threads = chkmalloc((jopt - 1) * sizeof(pthread_t));
+    for (i = 1; i < jopt; ++i) {
+      if (pthread_create(&threads[i-1], NULL, worker_run, &workers[i]) != 0) {
+        bail(1, "failed to create thread %d: %s\n", i, strerror(errno));
+      }
+    }
+    worker_run(&workers[0]); /* run thread 0 on the calling stack */
+    for (i = 1; i < jopt; ++i) {
+      pthread_join(threads[i-1], NULL);
+    }
+    free(threads);
+  } else
+#endif
+  {
+    worker_run(&workers[0]);
+  }
+
+  /* Free per-worker resources */
+  for (i = 0; i < jopt; ++i) {
+    int k;
+    secp256k1_ec_pubkey_batch_dealloc(workers[i].batch_ctx);
+    free(workers[i].unhexed);
+    for (k = 0; k < BATCH_MAX; ++k) {
+      /* In dict mode batch_line[k] is allocated by getline() and may be NULL
+       * if the thread was created but never read a line; free(NULL) is safe. */
+      free(workers[i].batch_line[k]);
+    }
+  }
+  free(workers);
 
   if (bloom_mmapf.mem) {
     munmapf(&bloom_mmapf);
@@ -917,19 +1043,12 @@ int main(int argc, char **argv) {
   if (ffile) { fclose(ffile); }
   if (ifile && ifile != stdin) { fclose(ifile); }
   if (ofile && ofile != stdout) { fclose(ofile); }
-  if (!Iopt) {
-    for (i = 0; i < BATCH_MAX; ++i) {
-      free(batch_line[i]);
-    }
-  }
   if (free_kdfsalt && kdfsalt) {
     free(kdfsalt);
     kdfsalt = NULL;
   }
   free(mem);
   mem = NULL;
-  free(unhexed);
-  unhexed = NULL;
   secp256k1_ec_pubkey_batch_free();
   secp256k1_ec_pubkey_precomp_table_free();
   return 0;
