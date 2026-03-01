@@ -13,10 +13,10 @@ else
   EXT  =
   UNAME_S := $(shell uname -s)
   ifeq ($(UNAME_S),Linux)
-    LIBS = -lrt -lcrypto -lgmp
+    LIBS = -lrt -lcrypto -lgmp -lpthread
   else
     # macOS, BSD, etc.
-    LIBS = -lcrypto -lgmp
+    LIBS = -lcrypto -lgmp -lpthread
   endif
 endif
 
