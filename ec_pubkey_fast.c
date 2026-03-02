@@ -641,6 +641,112 @@ void secp256k1_ec_pubkey_batch_free(void) {
   batchcap = 0;
 }
 
+/* ---------- per-thread batch context ---------------------------------------- */
+
+struct secp256k1_batch_s {
+  secp256k1_gej_t *pj;
+  secp256k1_ge_t  *pa;
+  secp256k1_fe_t  *az;
+  secp256k1_fe_t  *ai;
+  unsigned int     cap;
+};
+
+int secp256k1_ec_pubkey_batch_alloc(secp256k1_batch_t **b, unsigned int num) {
+  *b = malloc(sizeof(secp256k1_batch_t));
+  if (!*b) return 1;
+  (*b)->pj = malloc(sizeof(secp256k1_gej_t) * num);
+  (*b)->pa = malloc(sizeof(secp256k1_ge_t)  * num);
+  (*b)->az = malloc(sizeof(secp256k1_fe_t)  * num);
+  (*b)->ai = malloc(sizeof(secp256k1_fe_t)  * num);
+  if (!(*b)->pj || !(*b)->pa || !(*b)->az || !(*b)->ai) {
+    free((*b)->pj); free((*b)->pa); free((*b)->az); free((*b)->ai);
+    free(*b); *b = NULL;
+    return 1;
+  }
+  (*b)->cap = num;
+  return 0;
+}
+
+void secp256k1_ec_pubkey_batch_dealloc(secp256k1_batch_t *b) {
+  if (!b) return;
+  free(b->pj); free(b->pa); free(b->az); free(b->ai);
+  free(b);
+}
+
+static void secp256k1_ge_set_all_gej_mt(unsigned int num, secp256k1_batch_t *b) {
+  unsigned int i;
+  for (i = 0; i < num; i++) b->az[i] = b->pj[i].z;
+  secp256k1_fe_inv_all_var(num, b->ai, b->az);
+  for (i = 0; i < num; i++)
+    secp256k1_ge_set_gej_zinv(&b->pa[i], &b->pj[i], &b->ai[i]);
+}
+
+int secp256k1_ec_pubkey_batch_create_mt(secp256k1_batch_t *b, unsigned int num,
+    unsigned char (*pub)[65], unsigned char (*sec)[32]) {
+  unsigned int i;
+  for (i = 0; i < num; i++) {
+#ifdef USE_BL_ARITHMETIC
+    secp256k1_ecmult_gen_bl(&b->pj[i], sec[i]);
+#else
+    secp256k1_ecmult_gen2(&b->pj[i], sec[i]);
+#endif
+  }
+  secp256k1_ge_set_all_gej_mt(num, b);
+  for (i = 0; i < num; i++) {
+    secp256k1_fe_normalize_var(&b->pa[i].x);
+    secp256k1_fe_normalize_var(&b->pa[i].y);
+    pub[i][0] = 0x04;
+    secp256k1_fe_get_b32(pub[i] +  1, &b->pa[i].x);
+    secp256k1_fe_get_b32(pub[i] + 33, &b->pa[i].y);
+  }
+  return 0;
+}
+
+int secp256k1_ec_pubkey_batch_incr_mt(secp256k1_batch_t *b, unsigned int num,
+    unsigned int skip, unsigned char (*pub)[65], unsigned char (*sec)[32],
+    unsigned char start[32]) {
+  unsigned int i;
+  unsigned char b32[32];
+  secp256k1_scalar_t priv, incr_s;
+  secp256k1_gej_t temp;
+  secp256k1_ge_t incr_a;
+
+  secp256k1_scalar_set_b32(&priv, start, NULL);
+  secp256k1_scalar_get_b32(sec[0], &priv);
+
+  secp256k1_scalar_set_int(&incr_s, skip);
+  secp256k1_scalar_get_b32(b32, &incr_s);
+
+#ifdef USE_BL_ARITHMETIC
+  secp256k1_ecmult_gen_bl(&temp,      b32);
+  secp256k1_ecmult_gen_bl(&b->pj[0], start);
+#else
+  secp256k1_ecmult_gen2(&temp,      b32);
+  secp256k1_ecmult_gen2(&b->pj[0], start);
+#endif
+
+  secp256k1_ge_set_gej_var(&incr_a, &temp);
+
+  for (i = 1; i < num; i++) {
+    secp256k1_scalar_add(&priv, &priv, &incr_s);
+    secp256k1_scalar_get_b32(sec[i], &priv);
+    secp256k1_gej_add_ge_var(&b->pj[i], &b->pj[i-1], &incr_a, NULL);
+  }
+
+  secp256k1_ge_set_all_gej_mt(num, b);
+
+  for (i = 0; i < num; i++) {
+    secp256k1_fe_normalize_var(&b->pa[i].x);
+    secp256k1_fe_normalize_var(&b->pa[i].y);
+    pub[i][0] = 0x04;
+    secp256k1_fe_get_b32(pub[i] +  1, &b->pa[i].x);
+    secp256k1_fe_get_b32(pub[i] + 33, &b->pa[i].y);
+  }
+  return 0;
+}
+
+/* ---------------------------------------------------------------------------- */
+
 void secp256k1_ec_pubkey_precomp_table_free(void) {
   if (prec_mmapf.mem) {
     munmapf(&prec_mmapf);
