@@ -105,6 +105,40 @@ int main(void) {
   test_brainflayer_mixed_newlines();
   test_bloom_roundtrip();
 
+  /* TC-MT: multithreaded incremental mode covers all keys without gaps */
+  {
+    /* Run with 4 threads, B=4, N=32 starting at key 1.
+     * Expected: exactly 32 unique compressed-address lines, keys 1..32. */
+    FILE *pipe = popen(
+        "./brainflayer -j 4 -B 4 -N 32 "
+        "-I 0000000000000000000000000000000000000000000000000000000000000001"
+        " 2>/dev/null | grep ':c:' | wc -l",
+        "r");
+    assert(pipe != NULL);
+    int count = 0;
+    int nread = fscanf(pipe, "%d", &count);
+    int status = pclose(pipe);
+    assert(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+    assert(nread == 1);
+    assert(count == 32);
+  }
+
+  /* TC-MTv: -v flag should not cause early exit (double-counting fix) */
+  {
+    FILE *pipe = popen(
+        "./brainflayer -j 2 -B 4 -N 32 -v "
+        "-I 0000000000000000000000000000000000000000000000000000000000000001"
+        " 2>/dev/null | grep ':c:' | wc -l",
+        "r");
+    assert(pipe != NULL);
+    int count = 0;
+    int nread = fscanf(pipe, "%d", &count);
+    int status = pclose(pipe);
+    assert(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+    assert(nread == 1);
+    assert(count == 32);
+  }
+
   printf("OK\n");
   return 0;
 }

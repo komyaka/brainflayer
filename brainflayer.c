@@ -97,6 +97,7 @@ typedef struct {
   unsigned char *unhexed;
   size_t         unhexed_sz;
   unsigned char  start_priv[32]; /* incremental mode: per-thread start */
+  uint64_t       local_ilines;   /* incremental mode: per-thread processed-key count */
   /* stats (thread 0 only, when vopt) */
   uint64_t time_start;
   uint64_t time_last;
@@ -409,6 +410,7 @@ static void *worker_run(void *arg) {
       priv_add_uint64(ctx->start_priv,
           (uint64_t)ctx->num_threads * Bopt * nopt_mod);
       batch_stopped = Bopt;
+      ctx->local_ilines += (uint64_t)batch_stopped;
     } else {
       /* Dictionary mode: serialise reads from the shared input file. */
       batch_stopped = 0;
@@ -525,21 +527,8 @@ static void *worker_run(void *arg) {
     uint64_t ic = g_ilines_curr;
 #endif
 
-    /* Stats (thread 0 only, mirrors original single-thread behaviour).
-     * The original code incremented ilines_curr once unconditionally and
-     * once more inside the vopt block, effectively doubling the counter in
-     * verbose mode.  That affects the -N exit threshold when -v is active,
-     * so we replicate the same pattern here to keep single-thread semantics
-     * identical. */
+    /* Stats (thread 0 only). */
     if (vopt && ctx->thread_id == 0) {
-      /* second increment – matches original "ilines_curr += batch_stopped"
-       * inside the vopt block */
-#ifndef _WIN32
-      ic = __atomic_add_fetch(&g_ilines_curr, batch_stopped, __ATOMIC_RELAXED);
-#else
-      g_ilines_curr += batch_stopped;
-      ic = g_ilines_curr;
-#endif
       if (batch_stopped < Bopt || (ic & ctx->report_mask) == 0) {
         uint64_t time_curr    = getns();
         uint64_t time_delta   = time_curr - ctx->time_last;
@@ -580,9 +569,28 @@ static void *worker_run(void *arg) {
     }
 
     /* Exit condition */
-    if (batch_stopped < Bopt || g_eof || ic >= Nopt) {
-      if (vopt && ctx->thread_id == 0) { fprintf(stderr, "\n"); }
-      break;
+    if (Iopt) {
+      /* Incremental mode: use per-thread counter to prevent coverage gaps
+       * when -N is active with multiple threads.  Each thread handles its own
+       * share: ceil(Nopt / num_threads) keys, so all threads process the same
+       * number of batches and no key ranges are silently skipped.
+       * Use overflow-safe ceiling division: q + !!(r) avoids adding (n-1). */
+      uint64_t per_thread_limit;
+      if (Nopt == ~0ULL) {
+        per_thread_limit = ~0ULL;
+      } else {
+        uint64_t n = (uint64_t)ctx->num_threads;
+        per_thread_limit = Nopt / n + (Nopt % n != 0 ? 1 : 0);
+      }
+      if (ctx->local_ilines >= per_thread_limit) {
+        if (vopt && ctx->thread_id == 0) { fprintf(stderr, "\n"); }
+        break;
+      }
+    } else {
+      if (batch_stopped < Bopt || g_eof || ic >= Nopt) {
+        if (vopt && ctx->thread_id == 0) { fprintf(stderr, "\n"); }
+        break;
+      }
     }
   }
 
@@ -647,6 +655,7 @@ int main(int argc, char **argv) {
   bool free_kdfsalt = false;
 
   int spok = 0, aopt = 0, wopt = 16, jopt = 1;
+  int Bopt_explicit = 0; /* set to 1 when user passes -B */
   unsigned char *bopt = NULL, *iopt = NULL, *oopt = NULL;
   unsigned char *topt = NULL, *sopt = NULL, *popt = NULL;
   unsigned char *mopt = NULL, *ropt = NULL, *copt = NULL;
@@ -672,6 +681,7 @@ int main(int argc, char **argv) {
         break;
       case 'B':
         Bopt = atoi(optarg);
+        Bopt_explicit = 1;
         break;
       case 'N':
         Nopt = strtoull(optarg, NULL, 0); // allows 0x
@@ -961,6 +971,22 @@ int main(int argc, char **argv) {
 
   // set default batch size
   if (!Bopt) { Bopt = BATCH_DEFAULT; }
+
+  /* camp2 uses 2031 Keccak rounds per candidate; large batches exceed cache
+   * and waste CPU.  When -B was not set explicitly, cap at 256. */
+  if (input2priv == &camp2priv && Bopt > 256) {
+    if (!Bopt_explicit) {
+      fprintf(stderr,
+          "warning: camp2 mode performs 2031 Keccak rounds per candidate; "
+          "reducing batch size from %d to 256 for better performance "
+          "(use -B to override)\n", Bopt);
+      Bopt = 256;
+    } else {
+      fprintf(stderr,
+          "warning: camp2 mode performs 2031 Keccak rounds per candidate; "
+          "consider using -B 256 or smaller for better performance\n");
+    }
+  }
 
   /* Allocate and initialise per-worker contexts */
   worker_ctx_t *workers = chkmalloc(jopt * sizeof(worker_ctx_t));
