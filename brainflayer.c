@@ -410,7 +410,7 @@ static void *worker_run(void *arg) {
       priv_add_uint64(ctx->start_priv,
           (uint64_t)ctx->num_threads * Bopt * nopt_mod);
       batch_stopped = Bopt;
-      ctx->local_ilines += (uint64_t)Bopt;
+      ctx->local_ilines += (uint64_t)batch_stopped;
     } else {
       /* Dictionary mode: serialise reads from the shared input file. */
       batch_stopped = 0;
@@ -573,10 +573,15 @@ static void *worker_run(void *arg) {
       /* Incremental mode: use per-thread counter to prevent coverage gaps
        * when -N is active with multiple threads.  Each thread handles its own
        * share: ceil(Nopt / num_threads) keys, so all threads process the same
-       * number of batches and no key ranges are silently skipped. */
-      uint64_t per_thread_limit = (Nopt == ~0ULL)
-          ? ~0ULL
-          : (Nopt + (uint64_t)ctx->num_threads - 1) / (uint64_t)ctx->num_threads;
+       * number of batches and no key ranges are silently skipped.
+       * Use overflow-safe ceiling division: q + !!(r) avoids adding (n-1). */
+      uint64_t per_thread_limit;
+      if (Nopt == ~0ULL) {
+        per_thread_limit = ~0ULL;
+      } else {
+        uint64_t n = (uint64_t)ctx->num_threads;
+        per_thread_limit = Nopt / n + (Nopt % n != 0 ? 1 : 0);
+      }
       if (ctx->local_ilines >= per_thread_limit) {
         if (vopt && ctx->thread_id == 0) { fprintf(stderr, "\n"); }
         break;
